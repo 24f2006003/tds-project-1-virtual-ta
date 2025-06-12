@@ -20,13 +20,16 @@ class Query(BaseModel):
 
 # Load post metadata
 script_dir = os.path.dirname(os.path.abspath(__file__))
-data_dir = os.path.join(script_dir, "../data")
+data_dir = os.path.join(script_dir, "..", "data")
 index_path = os.path.join(data_dir, "post_index.pkl")
+
+if not os.path.exists(index_path):
+    raise FileNotFoundError(f"post_index.pkl not found at {index_path}. Run preprocess_posts.py to generate it.")
 
 try:
     with open(index_path, "rb") as f:
         index_data = pickle.load(f)
-    metadata = index_data["metadata"]
+    metadata = index_data["metadata"][:100]  # Limit to 100 posts
 except Exception as e:
     print(f"Error loading index: {e}")
     raise Exception("Failed to load post index")
@@ -57,9 +60,8 @@ def get_embeddings(texts: List[str], batch_size: int = 10, retries: int = 3) -> 
             except Exception as e:
                 print(f"Error getting embeddings for batch {i//batch_size + 1}, attempt {attempt + 1}: {e}")
                 if attempt == retries - 1:
-                    print(f"Failed to get embeddings for batch. Using zeros.")
                     embeddings.extend([[0] * 1536 for _ in batch])
-                time.sleep(2 ** attempt)  # Exponential backoff
+                time.sleep(2 ** attempt)
     return embeddings
 
 # Function to get chat completion
@@ -74,7 +76,7 @@ def get_chat_completion(question: str, context: str) -> str:
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": "You are a teaching assistant for a data science course. Provide a concise, accurate answer to the student's question, using the provided context from Discourse posts if relevant."},
+                    {"role": "system", "content": "You are a teaching assistant for a data science course. Provide a concise, accurate answer."},
                     {"role": "user", "content": f"Question: {question}\nContext: {context}"}
                 ],
                 "max_tokens": 200
@@ -82,12 +84,12 @@ def get_chat_completion(question: str, context: str) -> str:
             timeout=15
         )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        return response.json().get("choices", [{}])[0].get("message", {}).get("content", "No answer available")
     except Exception as e:
         print(f"Error getting chat completion: {e}")
         return "Sorry, I couldn't generate an answer. Please refer to the linked Discourse posts."
 
-# Precompute embeddings for posts
+# Load or generate embeddings
 embedding_cache_path = os.path.join(data_dir, "post_embeddings.pkl")
 if os.path.exists(embedding_cache_path):
     try:
@@ -97,7 +99,7 @@ if os.path.exists(embedding_cache_path):
         print(f"Error loading embeddings: {e}")
         post_embeddings = None
 else:
-    print("Generating post embeddings...")
+    print("Generating embeddings...")
     post_texts = [post["text"] for post in metadata]
     post_embeddings = get_embeddings(post_texts)
     try:
@@ -108,7 +110,9 @@ else:
         print(f"Error saving embeddings: {e}")
 
 if not post_embeddings:
-    print("Warning: No valid post embeddings available. Search may be limited.")
+    print("Generating embeddings at runtime...")
+    post_texts = [post["text"] for post in metadata]
+    post_embeddings = get_embeddings(post_texts)
 
 @app.post("/api/")
 async def answer_question(query: Query):
@@ -127,13 +131,13 @@ async def answer_question(query: Query):
             if np.linalg.norm(post_emb) > 0 else 0
             for post_emb in post_embeddings
         ]
-        top_indices = np.argsort(similarities)[-5:][::-1]  # Top 5 posts
+        top_indices = np.argsort(similarities)[-5:][::-1]
         
         # Collect relevant posts
         links = []
         context = ""
         for idx in top_indices:
-            if similarities[idx] > 0.1:  # Relevance threshold
+            if similarities[idx] > 0.1:
                 post = metadata[idx]
                 links.append({
                     "url": post["url"],
