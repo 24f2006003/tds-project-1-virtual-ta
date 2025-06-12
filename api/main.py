@@ -6,6 +6,7 @@ import pickle
 import os
 from typing import List, Dict
 import time
+import json
 
 app = FastAPI()
 
@@ -18,21 +19,46 @@ class Query(BaseModel):
     question: str
     image: str | None = None
 
-# Load post metadata
+# Load or generate post metadata
 script_dir = os.path.dirname(os.path.abspath(__file__))
 data_dir = os.path.join(script_dir, "..", "data")
+os.makedirs(data_dir, exist_ok=True)
 index_path = os.path.join(data_dir, "post_index.pkl")
 
-if not os.path.exists(index_path):
-    raise FileNotFoundError(f"post_index.pkl not found at {index_path}. Run preprocess_posts.py to generate it.")
+def create_small_index():
+    json_path = os.path.join(data_dir, "discourse_posts.json")
+    if not os.path.exists(json_path):
+        print(f"Warning: {json_path} not found. Using empty index.")
+        return []
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            posts = json.load(f)
+        # Limit to 50 posts to reduce size
+        return posts[:50]
+    except Exception as e:
+        print(f"Error reading JSON: {e}")
+        return []
 
-try:
-    with open(index_path, "rb") as f:
-        index_data = pickle.load(f)
-    metadata = index_data["metadata"][:100]  # Limit to 100 posts
-except Exception as e:
-    print(f"Error loading index: {e}")
-    raise Exception("Failed to load post index")
+if os.path.exists(index_path):
+    try:
+        with open(index_path, "rb") as f:
+            index_data = pickle.load(f)
+        metadata = index_data["metadata"][:50]  # Limit to 50 posts
+    except Exception as e:
+        print(f"Error loading index: {e}")
+        metadata = create_small_index()
+else:
+    print("Generating small index...")
+    metadata = create_small_index()
+    try:
+        with open(index_path, "wb") as f:
+            pickle.dump({"metadata": metadata}, f)
+        print(f"Saved small index to {index_path}")
+    except Exception as e:
+        print(f"Error saving index: {e}")
+
+if not metadata:
+    print("Warning: No metadata available. API will return limited results.")
 
 # Function to get embeddings with batching and retries
 def get_embeddings(texts: List[str], batch_size: int = 10, retries: int = 3) -> List[List[float]]:
@@ -137,7 +163,7 @@ async def answer_question(query: Query):
         links = []
         context = ""
         for idx in top_indices:
-            if similarities[idx] > 0.1:
+            if similarities[idx] > 0.1 and idx < len(metadata):
                 post = metadata[idx]
                 links.append({
                     "url": post["url"],
