@@ -14,7 +14,7 @@
   ],
   "functions": {
     "api/main.py": {
-      "includeFiles": ["data/**"]
+      "includeFiles": "data/**"
     }
   }
 }
