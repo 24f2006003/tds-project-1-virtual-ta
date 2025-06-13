@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import numpy as np
@@ -9,6 +10,14 @@ from typing import List, Dict
 import time
 
 app = FastAPI()
+# CORS configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development; restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # AI Proxy configuration
 AIPROXY_URL = "https://aiproxy.sanand.workers.dev/openai/"
