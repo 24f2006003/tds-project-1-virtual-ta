@@ -4,7 +4,13 @@
     {
       "src": "api/main.py",
       "use": "@vercel/python",
-      "config": { "includeFiles": ["data/discourse_posts.json"] }
+      "config": {
+        "includeFiles": ["data/discourse_posts.json"],
+        "excludeFiles": [
+          "data/post_index.pkl",
+          "data/post_embeddings.pkl"
+        ]
+      }
     }
   ],
   "routes": [
