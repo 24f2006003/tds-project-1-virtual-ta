@@ -13,8 +13,10 @@ app = FastAPI()
 # AI Proxy configuration
 AIPROXY_URL = "https://aiproxy.sanand.workers.dev/openai/"
 AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")
+print("DEBUG AIPROXY_TOKEN:", AIPROXY_TOKEN)
 if not AIPROXY_TOKEN:
     raise ValueError("AIPROXY_TOKEN environment variable not set")
+# Ensure AIPROXY_TOKEN is set
 
 # Define request model
 class Query(BaseModel):
