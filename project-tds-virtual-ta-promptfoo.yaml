@@ -12,7 +12,11 @@ providers:
           "question": "{{ question }}"{% if image %},
           "image": "{{ image }}"{% endif %}
         }
-      transformResponse: json
+      transformResponse: json  - id: openai
+    config:
+      apiKey: ${AIPROXY_TOKEN}
+      baseUrl: https://aiproxy.sanand.workers.dev/openai
+      defaultModel: gpt-4o-mini
 
 # Ensure JSON schema
 defaultTest:
