@@ -1,12 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import requests
 import numpy as np
 import pickle
 import os
+import json
 from typing import List, Dict
 import time
-import json
 
 app = FastAPI()
 
@@ -35,7 +35,6 @@ def create_small_index():
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             posts = json.load(f)
-        # Limit to 30 posts to reduce size further
         return [{"url": p["url"], "text": p["text"][:500]} for p in posts[:30]]
     except Exception as e:
         print(f"Error reading JSON: {e}")
@@ -143,8 +142,18 @@ if not post_embeddings:
     post_embeddings = get_embeddings(post_texts)
 
 @app.post("/api/")
-async def answer_question(query: Query):
+async def answer_question(request: Request):
     try:
+        # Handle raw request body
+        body = await request.body()
+        try:
+            data = json.loads(body.decode("utf-8"))
+            if isinstance(data, str):
+                data = json.loads(data)  # Handle stringified JSON
+            query = Query(**data)
+        except json.JSONDecodeError:
+            query = Query(**await request.json())  # Fallback to FastAPI JSON parsing
+        
         # Extract question
         question = query.question
         
@@ -183,7 +192,7 @@ async def answer_question(query: Query):
         }
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing request: {e}")
+        raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

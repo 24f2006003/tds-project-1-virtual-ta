@@ -3,7 +3,7 @@ description: "TDS Virtual TA Project Sample (but not the actual evaluation) Ques
 providers:
   - id: https
     config:
-      url: http://localhost:8000/api/ # Local endpoint for testing
+      url: https://tds-project-1-virtual-ta-gamma.vercel.app/api/
       method: POST
       headers:
         Content-Type: application/json
