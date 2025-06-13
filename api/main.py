@@ -152,8 +152,12 @@ if not post_embeddings:
     post_texts = [post["text"] for post in metadata]
     post_embeddings = get_embeddings(post_texts)
 
-@app.post("/api/")
+@app.api_route("/api/", methods=["POST", "OPTIONS"])
 async def answer_question(request: Request):
+    if request.method == "OPTIONS":
+        # CORS preflight request
+        return {}
+    
     try:
         # Handle raw request body
         body = await request.body()
