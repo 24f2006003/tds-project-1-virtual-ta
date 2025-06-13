@@ -33,8 +33,7 @@ def create_small_index():
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             posts = json.load(f)
-        # Limit to 50 posts to reduce size
-        return posts[:50]
+        return posts[:50]  # Limit to 50 posts
     except Exception as e:
         print(f"Error reading JSON: {e}")
         return []
@@ -43,7 +42,7 @@ if os.path.exists(index_path):
     try:
         with open(index_path, "rb") as f:
             index_data = pickle.load(f)
-        metadata = index_data["metadata"][:50]  # Limit to 50 posts
+        metadata = index_data["metadata"][:50]
     except Exception as e:
         print(f"Error loading index: {e}")
         metadata = create_small_index()
@@ -60,7 +59,7 @@ else:
 if not metadata:
     print("Warning: No metadata available. API will return limited results.")
 
-# Function to get embeddings with batching and retries
+# Function to get embeddings
 def get_embeddings(texts: List[str], batch_size: int = 10, retries: int = 3) -> List[List[float]]:
     embeddings = []
     for i in range(0, len(texts), batch_size):
