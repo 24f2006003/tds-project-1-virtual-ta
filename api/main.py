@@ -103,8 +103,17 @@ def get_embeddings(texts: List[str], batch_size: int = 5, retries: int = 3) -> L
     return embeddings
 
 # Function to get chat completion
-def get_chat_completion(question: str, context: str) -> str:
+def get_chat_completion(question: str, context: str, image: str | None = None) -> str:
     try:
+        messages = [
+            {"role": "system", "content": "You are a teaching assistant for a data science course. Provide a concise, accurate answer."},
+            {"role": "user", "content": f"Question: {question}\nContext: {context}"}
+        ]
+        
+        # Add image context if provided
+        if image:
+            messages.append({"role": "user", "content": f"I've also attached an image with this question: {image}"})
+        
         response = requests.post(
             f"{AIPROXY_URL}v1/chat/completions",
             headers={
@@ -113,10 +122,7 @@ def get_chat_completion(question: str, context: str) -> str:
             },
             json={
                 "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": "You are a teaching assistant for a data science course. Provide a concise, accurate answer."},
-                    {"role": "user", "content": f"Question: {question}\nContext: {context}"}
-                ],
+                "messages": messages,
                 "max_tokens": 200
             },
             timeout=15
@@ -191,14 +197,18 @@ async def answer_question(request: Request):
         for idx in top_indices:
             if similarities[idx] > 0.1 and idx < len(metadata):
                 post = metadata[idx]
+                # Get first sentence or first 100 characters for concise text
+                text = post["text"].split(".")[0]
+                if len(text) > 100:
+                    text = text[:97] + "..."
                 links.append({
                     "url": post["url"],
-                    "text": post["text"][:200] + "..." if len(post["text"]) > 200 else post["text"]
+                    "text": text
                 })
                 context += f"- {post['text'][:500]}\n"
         
         # Generate answer
-        answer = get_chat_completion(question, context)
+        answer = get_chat_completion(question, context, query.image)
         
         # Return response
         return {
