@@ -12,10 +12,9 @@
         ]
       }
     }
-  ],
-  "routes": [
+  ],  "routes": [
     {
-      "src": "/api/(.*)",
+      "src": "/(.*)",
       "dest": "api/main.py"
     }
   ]
