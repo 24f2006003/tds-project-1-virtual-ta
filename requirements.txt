@@ -6,3 +6,4 @@ httpx==0.28.1
 tqdm==4.67.1
 pillow==11.2.1
 python-multipart==0.0.9
+python-dotenv==1.0.1
