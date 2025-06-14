@@ -170,17 +170,18 @@ Question: {query.question}"""
                 temperature=0.05,  # Set to 0.05 for slight randomness while maintaining focus
                 max_tokens=500  # Set to 500 for concise, focused answers without unnecessary verbosity
             )
-            
-            # Extract relevant links
-            links = [post["url"] for post in relevant_posts]
-            
-            answer = response.choices[0].message.content
-            print(f"Successfully generated answer of length: {len(answer)}")
-            
-            return {
-                "answer": answer,
-                "links": links
-            }
+            # Check for errors in the response
+            if response.choices[0].message.content:
+                # Extract relevant links
+                links = [post["url"] for post in relevant_posts]
+
+                answer = response.choices[0].message.content
+                print(f"Successfully generated answer of length: {len(answer)}")
+
+                return {
+                    "answer": answer,
+                    "links": links
+                }
         except Exception as e:
             print(f"Error calling OpenAI API: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error generating answer: {str(e)}")
