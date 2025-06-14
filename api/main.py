@@ -36,16 +36,23 @@ client = OpenAI()
 # Load data files
 def load_data():
     try:
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        data_dir = os.path.join(os.path.dirname(current_dir), "data")
-        
-        with open(os.path.join(data_dir, "course_content.json"), "r", encoding="utf-8") as f:
-            course_content = json.load(f)
-        with open(os.path.join(data_dir, "discourse_posts.json"), "r", encoding="utf-8") as f:
-            discourse_posts = json.load(f)
-        return course_content, discourse_posts
+        # Try loading from local files
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(os.path.dirname(current_dir), "data")
+            
+            with open(os.path.join(data_dir, "course_content.json"), "r", encoding="utf-8") as f:
+                course_content = json.load(f)
+            with open(os.path.join(data_dir, "discourse_posts.json"), "r", encoding="utf-8") as f:
+                discourse_posts = json.load(f)
+            return course_content, discourse_posts
+            
+        except FileNotFoundError:
+            print("Data files not found")
+            return [], []
+            
     except Exception as e:
-        print(f"Error loading data files: {e}")
+        print(f"Error loading data: {e}")
         return [], []
 
 course_content, discourse_posts = load_data()
@@ -73,33 +80,17 @@ def find_relevant_context(question: str, max_results: int = 3) -> Tuple[str, Lis
     # Get course content
     course_context = ""
     if course_content and len(course_content) > 0:
-        course_context = course_content[0].get("text", "")
+        # Get the overview text from course content
+        course_context = course_content[0].get("text", "")[:2000]  # Take first 2000 chars of course content
     
     # Combine context
     contexts = []
     if course_context:
-        # Look for specific sections about prerequisites or requirements
-        lower_context = course_context.lower()
-        relevant_sections = [
-            ("Programming skills are a pre-requisite", "This course teaches you tools"),
-            ("you need a good understanding", "But isn't this a data science course"),
-            ("This course is quite hard", "Programming skills are a pre-requisite"),
-        ]
-        
-        for start_phrase, end_phrase in relevant_sections:
-            start_idx = lower_context.find(start_phrase.lower())
-            if start_idx != -1:
-                end_idx = lower_context.find(end_phrase.lower(), start_idx)
-                if end_idx != -1:
-                    contexts.append(course_context[start_idx:end_idx].strip())
-    
-    # Add relevant discourse posts about prerequisites
+        contexts.append(course_context)
     for post in relevant_posts:
-        if any(keyword in post["text"].lower() for keyword in ["prerequisite", "require", "need to know", "before taking"]):
-            contexts.append(post["text"][:500])
+        contexts.append(post["text"][:500])  # Take first 500 chars of each post
     
     combined_context = "\n\n".join(contexts)
-    
     return combined_context, relevant_posts
 
 class Query(BaseModel):
@@ -115,18 +106,12 @@ async def answer_question(query: Query):
         # Prepare conversation with context
         messages = [
             {"role": "system", "content": """You are a teaching assistant for the Tools in Data Science course at IIT Madras. 
-            Your answers should be based ONLY on the course content and student discussions provided.
-            When discussing prerequisites, focus on the specific skills and knowledge students need BEFORE taking the course,
-            not the topics that will be covered during the course.
-            Be direct and specific, citing information from the course materials when possible.
-            If the information isn't clearly stated in the provided context, say so."""},
-            {"role": "user", "content": f"""Course Context:
+            Provide helpful, accurate answers based on the course content and student discussions provided.
+            Keep your answers concise but thorough. If you're not sure about something, say so."""},
+            {"role": "user", "content": f"""Context from course materials and discussions:
             {context}
             
-            Question: {query.question}
-            
-            Important: Focus only on what students need to know BEFORE taking the course, not what they will learn during it.
-            Base your answer only on the course content provided above."""}
+            Question: {query.question}"""}
         ]
         
         if query.image:
@@ -141,8 +126,7 @@ async def answer_question(query: Query):
         )
         
         # Extract relevant links
-        links = [post["url"] for post in relevant_posts if any(keyword in post["text"].lower() 
-                for keyword in ["prerequisite", "require", "need to know", "before taking"])]
+        links = [post["url"] for post in relevant_posts]
         
         answer = response.choices[0].message.content
         return {
