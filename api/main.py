@@ -33,42 +33,18 @@ class Query(BaseModel):
     question: str
     image: str | None = None
 
-# Load or generate post metadata
+# Load post metadata directly from JSON
 script_dir = os.path.dirname(os.path.abspath(__file__))
-data_dir = os.path.join(script_dir, "..", "data")
-os.makedirs(data_dir, exist_ok=True)
-index_path = os.path.join(data_dir, "post_index.pkl")
+json_path = os.path.join(script_dir, "..", "data", "discourse_posts.json")
 
-def create_small_index():
-    json_path = os.path.join(data_dir, "discourse_posts.json")
-    if not os.path.exists(json_path):
-        print(f"Warning: {json_path} not found. Using empty index.")
-        return []
-    try:
-        with open(json_path, "r", encoding="utf-8") as f:
-            posts = json.load(f)
-        return [{"url": p["url"], "text": p["text"][:500]} for p in posts[:30]]
-    except Exception as e:
-        print(f"Error reading JSON: {e}")
-        return []
-
-if os.path.exists(index_path):
-    try:
-        with open(index_path, "rb") as f:
-            index_data = pickle.load(f)
-        metadata = index_data["metadata"][:30]
-    except Exception as e:
-        print(f"Error loading index: {e}")
-        metadata = create_small_index()
-else:
-    print("Generating small index...")
-    metadata = create_small_index()
-    try:
-        with open(index_path, "wb") as f:
-            pickle.dump({"metadata": metadata}, f)
-        print(f"Saved small index to {index_path}")
-    except Exception as e:
-        print(f"Error saving index: {e}")
+try:
+    with open(json_path, "r", encoding="utf-8") as f:
+        posts = json.load(f)
+    metadata = [{"url": p["url"], "text": p["text"][:500]} for p in posts[:30]]
+except Exception as e:
+    print(f"Error reading JSON: {e}")
+    # Provide fallback empty data instead of failing
+    metadata = []
 
 if not metadata:
     print("Warning: No metadata available. API will return limited results.")
@@ -116,30 +92,10 @@ def get_chat_completion(question: str, context: str, image: str | None = None) -
         print(f"Error getting chat completion: {e}")
         return "Sorry, I couldn't generate an answer. Please refer to the linked Discourse posts."
 
-# Load or generate embeddings
-embedding_cache_path = os.path.join(data_dir, "post_embeddings.pkl")
-if os.path.exists(embedding_cache_path):
-    try:
-        with open(embedding_cache_path, "rb") as f:
-            post_embeddings = pickle.load(f)
-    except Exception as e:
-        print(f"Error loading embeddings: {e}")
-        post_embeddings = None
-else:
-    print("Generating embeddings...")
-    post_texts = [post["text"] for post in metadata]
-    post_embeddings = get_embeddings(post_texts)
-    try:
-        with open(embedding_cache_path, "wb") as f:
-            pickle.dump(post_embeddings, f)
-        print(f"Saved embeddings to {embedding_cache_path}")
-    except Exception as e:
-        print(f"Error saving embeddings: {e}")
-
-if not post_embeddings:
-    print("Generating embeddings at runtime...")
-    post_texts = [post["text"] for post in metadata]
-    post_embeddings = get_embeddings(post_texts)
+# Generate embeddings at startup
+print("Generating embeddings...")
+post_texts = [post["text"] for post in metadata]
+post_embeddings = get_embeddings(post_texts) if post_texts else []
 
 @app.post("/")
 @app.options("/")
