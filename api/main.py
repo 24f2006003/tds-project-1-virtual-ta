@@ -5,10 +5,14 @@ from typing import Optional, List, Dict, Tuple
 import os
 import json
 from openai import OpenAI
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+# Only load dotenv in development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # We're probably on Vercel, which doesn't need dotenv
+    pass
 
 app = FastAPI()
 
