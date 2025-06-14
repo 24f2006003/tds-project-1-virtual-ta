@@ -128,28 +128,47 @@ async def answer_question(query: Query):
         # Log context found
         print(f"Found {len(relevant_posts)} relevant posts")
         print(f"Context length: {len(context)} characters")
-        
         # Prepare conversation with context
         messages = [
-            {"role": "system", "content": """You are a teaching assistant for the Tools in Data Science course at IIT Madras. 
-            Provide helpful, accurate answers based on the course content and student discussions provided.
-            Keep your answers concise but thorough. If you're not sure about something, say so."""},
-            {"role": "user", "content": f"""Context from course materials and discussions:
-            {context}
-            
-            Question: {query.question}"""}
+            {
+                "role": "system",
+                "content": (
+                    "You are a teaching assistant for the Tools in Data Science course at IIT Madras. "
+                    "Follow these guidelines strictly:\n\n"
+                    "1. Base your answers ONLY on the provided course content and discussions.\n"
+                    "2. For future dates or schedules (exams, deadlines, etc.), clearly state that this information "
+                    "will be announced later unless it's explicitly mentioned in the context.\n"
+                    "3. For technical choices (Docker vs Podman, etc.), give balanced advice based on course "
+                    "requirements and explain the reasoning.\n"
+                    "4. For grading questions, be precise about the scoring system only if it's explicitly "
+                    "mentioned in the context.\n"
+                    "5. If you're not completely sure about something, explicitly say so.\n"
+                    "6. Keep answers concise but informative.\n"
+                    "7. If the context doesn't contain enough information to answer accurately, "
+                    "acknowledge this in your response."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"""Context from course materials and discussions:
+{context}
+
+Question: {query.question}"""
+            }
         ]
-        
         if query.image:
-            messages.append({"role": "user", "content": f"I've also attached an image with this question: {query.image}"})
+            messages.append({
+                "role": "user",
+                "content": f"I've also attached an image with this question: {query.image}"
+            })
         
         try:
             # Get answer from OpenAI
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-40-mini",  # Using gpt-40-mini as it's supported by the AI proxy
                 messages=messages,
-                temperature=0.3,  # Lower temperature for more focused answers
-                max_tokens=300,
+                temperature=0.2,  # Lower temperature for more consistent answers
+                max_tokens=400  # Slightly increased for more complete answers
             )
             
             # Extract relevant links
