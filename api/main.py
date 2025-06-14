@@ -35,7 +35,10 @@ if not OPENAI_BASE_URL:
     print("Warning: OPENAI_BASE_URL environment variable not set")
 
 # Initialize OpenAI client - it will automatically use OPENAI_API_KEY and OPENAI_BASE_URL from env
-client = OpenAI()
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    base_url=OPENAI_BASE_URL
+)
 
 def resolve_path(relative_path: str) -> str:
     """Resolve path for both local and Vercel environments"""
@@ -43,9 +46,9 @@ def resolve_path(relative_path: str) -> str:
         # On Vercel, use /var/task
         return os.path.join("/var/task", relative_path)
     else:
-        # Local development
+        # Local development - use current directory
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(os.path.dirname(current_dir), relative_path)
+        return os.path.join(current_dir, relative_path)
 
 # Load data files
 def load_data():
@@ -84,7 +87,8 @@ def find_relevant_context(question: str, max_results: int = 3) -> Tuple[str, Lis
         # Search discourse posts
         post_scores = []
         for idx, post in enumerate(discourse_posts):
-            score = sum(1 for keyword in keywords if keyword in post["text"].lower())
+            post_text = post.get("text", "") if isinstance(post, dict) else str(post)
+            score = sum(1 for keyword in keywords if keyword in post_text.lower())
             if score > 0:
                 # Include the index to ensure stable sorting
                 post_scores.append((score, idx, post))
@@ -104,7 +108,8 @@ def find_relevant_context(question: str, max_results: int = 3) -> Tuple[str, Lis
         if course_context:
             contexts.append(course_context)
         for post in relevant_posts:
-            contexts.append(post["text"][:500])  # Take first 500 chars of each post
+            post_text = post.get("text", "") if isinstance(post, dict) else str(post)
+            contexts.append(post_text[:500])  # Take first 500 chars of each post
         
         combined_context = "\n\n".join(contexts)
         return combined_context, relevant_posts
@@ -165,7 +170,7 @@ Question: {query.question}"""
         try:
             # Get answer from OpenAI
             response = client.chat.completions.create(
-                model="gpt-40-mini",  # Using gpt-40-mini as it's supported by the AI proxy
+                model="gpt-4o-mini",  # Using gpt-4o-mini as it's supported by the AI proxy
                 messages=messages,
                 temperature=0.05,  # Set to 0.05 for slight randomness while maintaining focus
                 max_tokens=500  # Set to 500 for concise, focused answers without unnecessary verbosity
@@ -173,7 +178,13 @@ Question: {query.question}"""
             # Check for errors in the response
             if response.choices[0].message.content:
                 # Extract relevant links
-                links = [post["url"] for post in relevant_posts]
+                links = []
+                for post in relevant_posts:
+                    if "url" in post:
+                        links.append({
+                            "url": post["url"],
+                            "text": post.get("title", "Related discussion")
+                        })
 
                 answer = response.choices[0].message.content
                 print(f"Successfully generated answer of length: {len(answer)}")
@@ -182,9 +193,20 @@ Question: {query.question}"""
                     "answer": answer,
                     "links": links
                 }
+            else:
+                # Fallback if no content
+                return {
+                    "answer": "I couldn't generate a response based on the available course materials.",
+                    "links": []
+                }
+            
         except Exception as e:
             print(f"Error calling OpenAI API: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error generating answer: {str(e)}")
+            # Return fallback response instead of error
+            return {
+                "answer": "I'm having trouble accessing the AI service right now. Please try again later.",
+                "links": []
+            }
             
     except Exception as e:
         print(f"Error in answer_question: {str(e)}")
