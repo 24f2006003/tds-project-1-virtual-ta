@@ -3,7 +3,7 @@ description: "TDS Virtual TA Project Sample (but not the actual evaluation) Ques
 providers:
   - id: https
     config:
-      url: https://tds-project-1-virtual-ta-gamma.vercel.app/api/
+      url: https://tds-project-1-virtual-ta-gamma.vercel.app/api
       method: POST
       headers:
         Content-Type: application/json
@@ -12,11 +12,7 @@ providers:
           "question": "{{ question }}"{% if image %},
           "image": "{{ image }}"{% endif %}
         }
-      transformResponse: json  - id: openai
-    config:
-      apiKey: ${AIPROXY_TOKEN}
-      baseUrl: https://aiproxy.sanand.workers.dev/openai
-      defaultModel: gpt-4o-mini
+      transformResponse: json
 
 # Ensure JSON schema
 defaultTest:

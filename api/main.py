@@ -19,13 +19,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# AI Proxy configuration
-AIPROXY_URL = "https://aiproxy.sanand.workers.dev/openai/"
-AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")
-print("DEBUG AIPROXY_TOKEN:", AIPROXY_TOKEN)
-if not AIPROXY_TOKEN:
-    raise ValueError("AIPROXY_TOKEN environment variable not set")
-# Ensure AIPROXY_TOKEN is set
+# OpenAI configuration
+from openai import OpenAI
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable not set")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Define request model
 class Query(BaseModel):
@@ -79,20 +80,11 @@ def get_embeddings(texts: List[str], batch_size: int = 5, retries: int = 3) -> L
         batch = texts[i:i + batch_size]
         for attempt in range(retries):
             try:
-                response = requests.post(
-                    f"{AIPROXY_URL}v1/embeddings",
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {AIPROXY_TOKEN}"
-                    },
-                    json={
-                        "model": "text-embedding-3-small",
-                        "input": batch
-                    },
-                    timeout=10
+                response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=batch
                 )
-                response.raise_for_status()
-                batch_embeddings = [item["embedding"] for item in response.json()["data"]]
+                batch_embeddings = [item.embedding for item in response.data]
                 embeddings.extend(batch_embeddings)
                 break
             except Exception as e:
@@ -114,21 +106,12 @@ def get_chat_completion(question: str, context: str, image: str | None = None) -
         if image:
             messages.append({"role": "user", "content": f"I've also attached an image with this question: {image}"})
         
-        response = requests.post(
-            f"{AIPROXY_URL}v1/chat/completions",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {AIPROXY_TOKEN}"
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": messages,
-                "max_tokens": 200
-            },
-            timeout=15
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            max_tokens=200
         )
-        response.raise_for_status()
-        return response.json().get("choices", [{}])[0].get("message", {}).get("content", "No answer available")
+        return response.choices[0].message.content
     except Exception as e:
         print(f"Error getting chat completion: {e}")
         return "Sorry, I couldn't generate an answer. Please refer to the linked Discourse posts."
