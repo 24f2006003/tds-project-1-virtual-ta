@@ -5,9 +5,12 @@
       "src": "api/main.py",
       "use": "@vercel/python",
       "config": {
-        "includeFiles": ["data/**"],
         "maxLambdaSize": "10mb",
-        "runtime": "python3.9"
+        "runtime": "python3.9",
+        "includeFiles": [
+          "data/**/*",
+          "api/**/*"
+        ]
       }
     }
   ],
@@ -16,8 +19,5 @@
       "src": "/(.*)",
       "dest": "api/main.py"
     }
-  ],
-  "env": {
-    "OPENAI_BASE_URL": "https://aipipe.org/openai/v1"
-  }
+  ]
 }
