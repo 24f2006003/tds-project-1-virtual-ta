@@ -141,11 +141,11 @@ async def answer_question(query: Query):
                     "4. If the context does not contain enough information to answer accurately, clearly state that you cannot answer based on the provided materials.\n"
                     "5. For future dates or schedules (exams, deadlines, etc.), clearly state that this information "
                     "will be announced later unless it's explicitly mentioned in the context.\n"
-                    "6. For technical choices (Docker vs Podman, etc.), give advice ONLY if the context provides it.\n"
-                    "7. For grading questions, be precise about the scoring system only if it's explicitly "
-                    "mentioned in the context.\n"
+                    "6. For technical choices (Docker vs Podman, etc.), give advice ONLY if the context provides it. If the context does not mention a tool, do not recommend or explain it.\n"
+                    "7. For grading or dashboard display questions, answer ONLY if the context explicitly describes the behavior.\n"
                     "8. If you're not completely sure about something, explicitly say so.\n"
                     "9. Keep answers as brief and direct as possible.\n"
+                    "10. Never assume or infer details not present in the provided context.\n"
                 )
             },
             {
@@ -167,8 +167,8 @@ Question: {query.question}"""
             response = client.chat.completions.create(
                 model="gpt-40-mini",  # Using gpt-40-mini as it's supported by the AI proxy
                 messages=messages,
-                temperature=0.2,  # Lower temperature for more consistent answers
-                max_tokens=400  # Slightly increased for more complete answers
+                temperature=0.05,  # Set to 0.05 for slight randomness while maintaining focus
+                max_tokens=500  # Set to 500 for concise, focused answers without unnecessary verbosity
             )
             
             # Extract relevant links
