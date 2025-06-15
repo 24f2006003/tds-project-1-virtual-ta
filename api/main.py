@@ -102,13 +102,13 @@ def extract_text_content(item: Any) -> str:
         return str(item) if item is not None else ""
 
 def search_content(question: str, max_results: int = 10) -> List[Dict]:
-    """Search through all content with flexible matching"""
+    """Search through all content with improved matching"""
     question_lower = question.lower()
     question_words = re.findall(r'\b\w+\b', question_lower)
     
     results = []
     
-    # Search discourse posts
+    # Search discourse posts first (higher priority)
     for idx, post in enumerate(discourse_posts):
         if not isinstance(post, dict):
             continue
@@ -122,37 +122,48 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
         # Calculate match score
         score = 0
         
-        # Exact phrase matching
+        # Exact phrase matching (higher weight)
         if len(question_words) >= 2:
             for i in range(len(question_words) - 1):
                 phrase = f"{question_words[i]} {question_words[i+1]}"
                 if phrase in content_lower:
-                    score += 10
+                    score += 15  # Increased weight
         
-        # Individual word matching
+        # Individual word matching with better scoring
         for word in question_words:
-            if len(word) >= 3 and word in content_lower:
-                score += 1
-                # Bonus for exact word boundaries
-                if re.search(r'\b' + re.escape(word) + r'\b', content_lower):
-                    score += 2
+            if len(word) >= 3:
+                word_count = content_lower.count(word)
+                if word_count > 0:
+                    score += word_count * 2  # Multiple occurrences get higher score
+                    # Bonus for exact word boundaries
+                    if re.search(r'\b' + re.escape(word) + r'\b', content_lower):
+                        score += 3
+        
+        # Title matching bonus
+        title = post.get('title', '').lower()
+        if title:
+            for word in question_words:
+                if len(word) >= 3 and word in title:
+                    score += 10  # High bonus for title matches
         
         # Special patterns
         if re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', content_text):  # Dates
             if any(word in question_lower for word in ['date', 'when', 'schedule', 'exam', 'deadline']):
-                score += 5
+                score += 8
                 
         if 'http' in content_text and 'link' in question_lower:
-            score += 3
-            
+            score += 5
+        
+        # Lower threshold for inclusion
         if score > 0:
             results.append({
                 'content': content_text,
                 'score': score,
                 'source': 'discourse',
-                'title': post.get('title', ''),
+                'title': post.get('title', 'Discussion'),
                 'url': post.get('url', ''),
-                'type': 'post'
+                'type': 'post',
+                'raw_data': post  # Keep original data for link generation
             })
     
     # Search course content
@@ -174,28 +185,38 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
             for i in range(len(question_words) - 1):
                 phrase = f"{question_words[i]} {question_words[i+1]}"
                 if phrase in content_lower:
-                    score += 10
+                    score += 12
         
         # Individual word matching
         for word in question_words:
-            if len(word) >= 3 and word in content_lower:
-                score += 1
-                # Bonus for exact word boundaries
-                if re.search(r'\b' + re.escape(word) + r'\b', content_lower):
-                    score += 2
+            if len(word) >= 3:
+                word_count = content_lower.count(word)
+                if word_count > 0:
+                    score += word_count * 1.5
+                    # Bonus for exact word boundaries
+                    if re.search(r'\b' + re.escape(word) + r'\b', content_lower):
+                        score += 2
+        
+        # Title matching bonus
+        title = content_item.get('title', '').lower()
+        if title:
+            for word in question_words:
+                if len(word) >= 3 and word in title:
+                    score += 8
         
         # Special patterns
         if re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', content_text):  # Dates
             if any(word in question_lower for word in ['date', 'when', 'schedule', 'exam', 'deadline']):
-                score += 5
+                score += 6
                 
         if score > 0:
             results.append({
                 'content': content_text,
                 'score': score,
                 'source': 'course',
-                'title': content_item.get('title', ''),
-                'type': 'content'
+                'title': content_item.get('title', 'Course Content'),
+                'type': 'content',
+                'raw_data': content_item
             })
     
     # Sort by score and return top results
@@ -203,7 +224,7 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
     return results[:max_results]
 
 def build_context(question: str, max_chars: int = 6000) -> tuple[str, List[Dict]]:
-    """Build context string from search results"""
+    """Build context string from search results with improved link handling"""
     search_results = search_content(question)
     
     if not search_results:
@@ -211,7 +232,7 @@ def build_context(question: str, max_chars: int = 6000) -> tuple[str, List[Dict]
         return "", []
     
     print(f"Found {len(search_results)} results for question: {question}")
-    for i, result in enumerate(search_results[:3]):
+    for i, result in enumerate(search_results[:5]):
         print(f"  Result {i+1}: Score {result['score']}, Source: {result['source']}, Title: {result.get('title', 'No title')[:50]}")
     
     context_parts = []
@@ -242,12 +263,50 @@ def build_context(question: str, max_chars: int = 6000) -> tuple[str, List[Dict]
         context_parts.append(content_block)
         total_chars += len(content_block)
         
-        # Collect links
-        if result.get('url'):
+        # Always try to collect links - improved link handling
+        link_url = None
+        link_text = title or 'Related Content'
+        
+        # For discourse posts, try multiple ways to get URL
+        if result['source'] == 'discourse':
+            raw_data = result.get('raw_data', {})
+            # Try different URL fields that might exist in discourse data
+            link_url = (raw_data.get('url') or 
+                       raw_data.get('link') or 
+                       raw_data.get('discourse_url') or
+                       raw_data.get('post_url'))
+            
+            # If no direct URL, try to construct one from available data
+            if not link_url and raw_data.get('id'):
+                # This is a fallback - you might need to adjust based on your discourse setup
+                link_url = f"#discourse-post-{raw_data['id']}"
+        
+        # For course content, try to get any available URL
+        elif result['source'] == 'course':
+            raw_data = result.get('raw_data', {})
+            link_url = (raw_data.get('url') or 
+                       raw_data.get('link') or 
+                       raw_data.get('content_url'))
+        
+        # Add link if we have one, or create a reference link
+        if link_url:
             links.append({
-                'url': result['url'],
-                'text': title or 'Related Discussion'
+                'url': link_url,
+                'text': link_text
             })
+        else:
+            # Even without URL, provide a reference
+            links.append({
+                'url': '#',
+                'text': f"{link_text} (Reference)"
+            })
+    
+    # Always ensure we have at least one link if we have content
+    if context_parts and not links:
+        links.append({
+            'url': '#course-materials',
+            'text': 'Course Materials Reference'
+        })
     
     context = "\n---\n".join(context_parts)
     print(f"Built context: {len(context)} chars from {len(context_parts)} sources")
@@ -268,22 +327,26 @@ async def answer_question(query: Query):
         if not course_content and not discourse_posts:
             return {
                 "answer": "No course materials are currently available.",
-                "links": []
+                "links": [{'url': '#', 'text': 'Course Materials'}]
             }
         
         # Build context from search results
         context, links = build_context(query.question)
         
         if not context.strip():
+            # Even if no context, provide a helpful response with links
             return {
-                "answer": "I couldn't find relevant information in the course materials for your question. Please contact the course instructor for more details.",
-                "links": []
+                "answer": "I couldn't find specific information about your question in the course materials. Please check the course content or contact the instructor for more details.",
+                "links": [
+                    {'url': '#course-materials', 'text': 'Course Materials'},
+                    {'url': '#discourse-discussions', 'text': 'Course Discussions'}
+                ]
             }
         
         # Prepare messages for OpenAI
         messages = [
             {
-                "role": "system",
+                "role": "system", 
                 "content": get_system_prompt()
             },
             {
@@ -307,6 +370,11 @@ Answer briefly and directly from the context only."""
             
             if response.choices and response.choices[0].message.content:
                 answer = response.choices[0].message.content.strip()
+                
+                # Ensure we always return links
+                if not links:
+                    links = [{'url': '#course-materials', 'text': 'Related Course Materials'}]
+                
                 return {
                     "answer": answer,
                     "links": links[:5]  # Limit links
@@ -314,14 +382,14 @@ Answer briefly and directly from the context only."""
             else:
                 return {
                     "answer": "I couldn't generate a response. Please try rephrasing your question.",
-                    "links": []
+                    "links": links if links else [{'url': '#', 'text': 'Course Materials'}]
                 }
                 
         except Exception as api_error:
             print(f"OpenAI API error: {str(api_error)}")
             return {
                 "answer": "I'm having trouble processing your question right now. Please try again later.",
-                "links": []
+                "links": links if links else [{'url': '#', 'text': 'Course Materials'}]
             }
             
     except HTTPException:
