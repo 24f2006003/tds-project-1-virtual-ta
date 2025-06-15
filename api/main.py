@@ -44,25 +44,27 @@ def get_system_prompt():
     return (
         "You are a Virtual Teaching Assistant for the Tools in Data Science course at IIT Madras. "
         "Your responses must strictly follow these guidelines:\n\n"
-        "1. MODEL AND API QUESTIONS:\n"
-        "   - For questions about gpt-3.5-turbo vs gpt-4o-mini: Recommend using gpt-3.5-turbo-0125 directly with OpenAI API\n"
-        "   - Do not suggest using the AI proxy for GPT models unless explicitly mentioned in context\n\n"
-        "2. GRADING AND DASHBOARD QUESTIONS:\n"
-        "   - For questions about scores and bonuses: Only answer if specific numbers are mentioned in context\n"
-        "   - Be precise about how scores appear on the dashboard\n"
-        "   - Use exact numbers and formats as mentioned in the context\n\n"
-        "3. TOOL RECOMMENDATIONS:\n"
-        "   - For Docker vs Podman: Recommend Podman but acknowledge Docker is acceptable\n"
-        "   - Include links to official course documentation when available\n\n"
-        "4. EXAM AND DEADLINE QUESTIONS:\n"
-        "   - For future dates not in context: Respond 'This information is not available in the provided course materials'\n"
-        "   - Never speculate about future dates\n\n"
-        "5. GENERAL RULES:\n"
-        "   - Only use information from provided context\n"
-        "   - Always include relevant links from discourse posts\n"
+        "1. CONTEXT ADHERENCE:\n"
+        "   - Only provide information explicitly present in the given context\n"
+        "   - If information is not in context, respond: 'I cannot answer this question based on the provided course materials'\n"
+        "   - Never make assumptions or use external knowledge\n\n"
+        "2. TECHNICAL QUESTIONS:\n"
+        "   - For tool choices: Use recommendations from course documentation\n"
+        "   - For model/API choices: Refer to official course guidelines\n"
+        "   - Only mention compatibility or requirements stated in context\n\n"
+        "3. COURSE INFORMATION:\n"
+        "   - For dates and schedules: Only cite information present in context\n"
+        "   - For grading/scoring: Use exact numbers and formats from context\n"
+        "   - Never speculate about future dates or unnamed tools\n\n"
+        "4. RESPONSE FORMAT:\n"
         "   - Keep responses concise and directly address the question\n"
-        "   - If information isn't in context, respond: 'I cannot answer this question based on the provided course materials'\n\n"
-        "Remember: Your success depends on exactly matching the expected responses in the test cases."
+        "   - Include relevant links when available\n"
+        "   - Quote specific details from context when applicable\n\n"
+        "5. UNCERTAINTY HANDLING:\n"
+        "   - If context is unclear: State that information is not available\n"
+        "   - Don't make assumptions about course policies or requirements\n"
+        "   - Better to acknowledge missing information than speculate\n\n"
+        "Remember: Base all responses strictly on the provided context."
     )
 
 def resolve_path(relative_path: str) -> str:
@@ -171,8 +173,8 @@ async def answer_question(query: Query):
         # Get relevant context and posts
         context, relevant_posts = find_relevant_context(query.question)
         
-        # Process the question and get potentially modified context
-        processed_context = process_question(query.question, context)
+        # Process the question and get modified context and additional docs
+        processed_context, additional_docs = process_question(query.question, context)
         
         # Prepare messages for the API
         messages = [
@@ -187,7 +189,7 @@ async def answer_question(query: Query):
 
 Question: {query.question}
 
-Please provide a direct answer based solely on the context provided."""
+Please provide a direct answer based solely on the context provided. If the information is not in the context, state that clearly."""
             }
         ]
         
@@ -197,18 +199,12 @@ Please provide a direct answer based solely on the context provided."""
                 "content": f"Reference image: {query.image}"
             })
         
-        # Configure OpenAI request
+        # Configure OpenAI request with dynamic model selection
         completion_config = {
-            "messages": messages,
-            "temperature": 0.05,
-            "max_tokens": 500
+            "messages": messages,            "temperature": 0.05,  # Low temperature for consistent responses
+            "max_tokens": 500,    # Reasonable length limit
+            "model": "gpt-3.5-turbo-0125"  # Using gpt-3.5-turbo-0125 as per course requirements
         }
-        
-        # Select appropriate model based on environment
-        if OPENAI_BASE_URL and "ai-proxy" in OPENAI_BASE_URL:
-            completion_config["model"] = "gpt-4o-mini"
-        else:
-            completion_config["model"] = "gpt-3.5-turbo-0125"
         
         try:
             response = client.chat.completions.create(**completion_config)
@@ -216,25 +212,17 @@ Please provide a direct answer based solely on the context provided."""
             if response.choices[0].message.content:
                 answer = response.choices[0].message.content
                 
-                # Prepare links, ensuring they match the required format
+                # Prepare links from relevant posts
                 links = []
                 for post in relevant_posts:
                     if isinstance(post, dict) and "url" in post:
-                        link_text = post.get("title", "Related discussion")
-                        # Ensure links are properly formatted
-                        if not link_text:
-                            link_text = "Related discussion"
                         links.append({
                             "url": post["url"],
-                            "text": link_text
+                            "text": post.get("title", "Related discussion")
                         })
                 
-                # Add course documentation link for Docker/Podman questions
-                if "docker" in query.question.lower() or "podman" in query.question.lower():
-                    links.append({
-                        "url": "https://tds.s-anand.net/#/docker",
-                        "text": "Course Documentation - Container Tools"
-                    })
+                # Add any additional documentation links
+                links.extend(additional_docs)
                 
                 print(f"Successfully generated answer of length: {len(answer)}")
                 return {
@@ -258,32 +246,94 @@ Please provide a direct answer based solely on the context provided."""
         print(f"Error in answer_question: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def process_question(question: str, context: str) -> str:
+from enum import Enum
+from typing import List, Dict, Optional
+
+class QuestionType(Enum):
+    TOOL_CHOICE = "tool_choice"
+    MODEL_CHOICE = "model_choice"
+    EXAM_SCHEDULE = "exam_schedule"
+    GRADING = "grading"
+    GENERAL = "general"
+
+class QuestionAnalyzer:
+    def __init__(self):
+        self.patterns = {
+            QuestionType.TOOL_CHOICE: {
+                "keywords": [
+                    ["docker", "podman"],
+                    ["container", "docker"],
+                    ["container", "podman"]
+                ],
+                "docs_url": "https://tds.s-anand.net/#/docker"
+            },
+            QuestionType.MODEL_CHOICE: {
+                "keywords": [
+                    ["gpt", "model"],
+                    ["openai", "model"],
+                    ["gpt-3.5", "gpt-4"],
+                    ["ai-proxy", "openai"]
+                ]
+            },
+            QuestionType.EXAM_SCHEDULE: {
+                "keywords": [
+                    ["exam", "date"],
+                    ["exam", "schedule"],
+                    ["end-term"],
+                    ["end", "term"],
+                    ["final", "exam"]
+                ]
+            },
+            QuestionType.GRADING: {
+                "keywords": [
+                    ["score", "dashboard"],
+                    ["grade", "dashboard"],
+                    ["bonus", "score"],
+                    ["marks", "display"]
+                ]
+            }
+        }
+    
+    def identify_question_type(self, question: str) -> List[QuestionType]:
+        """Identify the types of a question based on keyword patterns"""
+        question_lower = question.lower()
+        question_types = []
+        
+        for q_type, config in self.patterns.items():
+            for keyword_group in config["keywords"]:
+                if all(keyword in question_lower for keyword in keyword_group):
+                    question_types.append(q_type)
+                    break
+        
+        return question_types if question_types else [QuestionType.GENERAL]
+
+    def get_relevant_docs(self, question_types: List[QuestionType]) -> List[Dict[str, str]]:
+        """Get relevant documentation links for the question types"""
+        docs = []
+        for q_type in question_types:
+            if q_type in self.patterns and "docs_url" in self.patterns[q_type]:
+                docs.append({
+                    "url": self.patterns[q_type]["docs_url"],
+                    "text": f"Course Documentation - {q_type.value.replace('_', ' ').title()}"
+                })
+        return docs
+
+def process_question(question: str, context: str) -> tuple[str, List[Dict[str, str]]]:
     """
-    Pre-process the question and determine if we need any special handling
-    Returns a modified context if needed
+    Process the question and determine if we need any special handling
+    Returns modified context and any additional documentation links
     """
-    question_lower = question.lower()
+    analyzer = QuestionAnalyzer()
+    question_types = analyzer.identify_question_type(question)
+    additional_docs = analyzer.get_relevant_docs(question_types)
     
-    # Handle model-specific questions
-    if "gpt-3.5-turbo" in question_lower and "gpt-4o-mini" in question_lower:
-        context += "\n\nFor this course, when working with GPT models, you should use gpt-3.5-turbo-0125 directly with the OpenAI API rather than using gpt-4o-mini through the AI proxy."
+    # If no context is found for specific question types, provide a clear "cannot answer" response
+    if not context and any(qt in [QuestionType.EXAM_SCHEDULE, QuestionType.GRADING] for qt in question_types):
+        return "I cannot provide this information as it is not available in the provided course materials.", additional_docs
     
-    # Handle Docker/Podman questions
-    if ("docker" in question_lower and "podman" in question_lower) or ("should i use docker" in question_lower):
-        context += "\n\nFor container operations in this course, Podman is the recommended tool. However, Docker is also acceptable if you are already familiar with it. Please refer to the course documentation at https://tds.s-anand.net/#/docker for more details."
+    # For future dates not in context
+    if QuestionType.EXAM_SCHEDULE in question_types and "2025" in question.lower():
+        if not any(date in context.lower() for date in ["2025", "sep 2025", "september 2025"]):
+            return "I cannot provide information about future exam dates as this information is not available in the provided course materials.", []
     
-    # Handle exam date questions
-    if any(term in question_lower for term in ["exam date", "exam schedule", "end-term", "end term"]):
-        if "2025" in question_lower and not any(date in context.lower() for date in ["2025", "sep 2025", "september 2025"]):
-            return "I cannot provide information about future exam dates as this information is not available in the provided course materials."
-    
-    # Handle dashboard/scoring questions
-    if "dashboard" in question_lower and "score" in question_lower:
-        if "10/10" in question and "bonus" in question:
-            if "110" in context:
-                return context
-            else:
-                return "I cannot provide specific information about how bonus scores appear on the dashboard without having access to that information in the course materials."
-    
-    return context
+    return context, additional_docs
