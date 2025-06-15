@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import os
 import json
 import re
@@ -65,6 +65,26 @@ def load_data():
         print(f"Successfully loaded {len(course_content)} course content entries")
         print(f"Successfully loaded {len(discourse_posts)} discourse posts")
         
+        # Debug: Print structure of first few entries
+        if course_content:
+            print("Course content structure:")
+            for i, item in enumerate(course_content[:2]):
+                print(f"  Entry {i}: {type(item)} - Keys: {list(item.keys()) if isinstance(item, dict) else 'Not a dict'}")
+                if isinstance(item, dict) and 'text' in item:
+                    print(f"    Text length: {len(item['text'])}")
+                    print(f"    Text preview: {item['text'][:100]}...")
+        
+        if discourse_posts:
+            print("Discourse posts structure:")
+            for i, item in enumerate(discourse_posts[:2]):
+                print(f"  Entry {i}: {type(item)} - Keys: {list(item.keys()) if isinstance(item, dict) else 'Not a dict'}")
+                if isinstance(item, dict):
+                    if 'text' in item:
+                        print(f"    Text length: {len(item['text'])}")
+                        print(f"    Text preview: {item['text'][:100]}...")
+                    if 'title' in item:
+                        print(f"    Title: {item['title']}")
+        
         return course_content, discourse_posts
             
     except FileNotFoundError as e:
@@ -81,134 +101,217 @@ def load_data():
 course_content, discourse_posts = load_data()
 
 def get_system_prompt():
-    """System prompt for the Virtual TA - only uses data from JSON files"""
+    """System prompt for the Virtual TA"""
     return (
         "You are a Virtual Teaching Assistant for the Tools in Data Science course at IIT Madras. "
-        "You must ONLY use information provided in the context from the course materials and discourse posts. "
-        "Follow these strict guidelines:\n\n"
-        "1. ONLY answer based on the provided context - never add information not in the context\n"
-        "2. If the answer is not in the provided context, clearly state 'This information is not available in the course materials provided'\n"
-        "3. Quote exact details, numbers, and specifications from the context\n"
-        "4. Do not make assumptions or provide general knowledge - stick strictly to the provided materials\n"
-        "5. If multiple options are mentioned in the context, present them as they appear\n"
-        "6. Include relevant links when they are provided in the context\n"
-        "7. Keep responses concise and directly address the question\n\n"
-        "Remember: You can ONLY use information that appears in the provided context."
+        "You must answer questions based on the provided context from course materials and discourse discussions. "
+        "Guidelines:\n\n"
+        "1. Use the provided context to answer questions accurately and helpfully\n"
+        "2. If the context contains relevant information, use it to provide a comprehensive answer\n"
+        "3. Quote specific details, numbers, and examples from the context when relevant\n"
+        "4. If the context doesn't contain enough information to answer fully, say so and provide what you can\n"
+        "5. Be direct and practical in your responses\n"
+        "6. Include links when they are provided in the context\n"
+        "7. Structure your answer clearly and concisely\n\n"
+        "Answer based on the context provided, and be helpful to the student."
     )
 
+def extract_searchable_text(item: Any) -> str:
+    """Extract all searchable text from a JSON item"""
+    if isinstance(item, str):
+        return item
+    elif isinstance(item, dict):
+        text_parts = []
+        for key, value in item.items():
+            if isinstance(value, str) and value.strip():
+                text_parts.append(value)
+            elif isinstance(value, (list, dict)):
+                text_parts.append(extract_searchable_text(value))
+        return " ".join(text_parts)
+    elif isinstance(item, list):
+        return " ".join([extract_searchable_text(subitem) for subitem in item])
+    else:
+        return str(item)
+
 def calculate_relevance_score(text: str, question: str) -> float:
-    """Calculate how relevant a text is to the question"""
+    """Calculate relevance score with more liberal matching"""
     if not text or not question:
         return 0.0
     
     text_lower = text.lower()
     question_lower = question.lower()
     
-    # Get significant words from question (length > 2)
-    question_words = [w for w in question_lower.split() if len(w) > 2]
+    # Extract meaningful words from question (length >= 3)
+    question_words = [w for w in re.findall(r'\b\w{3,}\b', question_lower)]
     if not question_words:
         return 0.0
     
-    text_words = set(text_lower.split())
+    score = 0.0
     
-    # Basic word matching
+    # Direct phrase matching (highest score)
+    for i in range(len(question_words) - 1):
+        phrase = f"{question_words[i]} {question_words[i+1]}"
+        if phrase in text_lower:
+            score += 10.0
+    
+    # Individual word matching
+    text_words = set(re.findall(r'\b\w+\b', text_lower))
     word_matches = sum(1 for word in question_words if word in text_words)
+    score += word_matches * 2.0
     
-    # Technical terms and numbers get higher scores
-    tech_terms = re.findall(r'\b[a-zA-Z]+[-\.][a-zA-Z0-9\.-]+\b', text_lower)
-    numbers = re.findall(r'\b\d+(?:[\/\.]\d+)*\b', text_lower)
+    # Technical terms (with dots, dashes, numbers)
+    tech_terms = re.findall(r'\b[a-zA-Z0-9]+[.-][a-zA-Z0-9.-]+\b', text_lower)
+    for term in tech_terms:
+        if term in question_lower:
+            score += 5.0
     
-    tech_score = sum(2.0 for term in tech_terms if term in question_lower)
-    number_score = sum(1.5 for num in numbers if num in question_lower)
+    # Numbers and versions
+    numbers = re.findall(r'\b\d+(?:[./]\d+)*\b', text_lower)
+    for num in numbers:
+        if num in question_lower:
+            score += 3.0
+    
+    # URLs
+    urls = re.findall(r'https?://[^\s]+', text_lower)
+    for url in urls:
+        if url in question_lower:
+            score += 15.0  # Very high score for direct URL matches
+    
+    # Semantic keywords
+    semantic_keywords = {
+        'install': ['setup', 'installation', 'installing'],
+        'error': ['issue', 'problem', 'trouble', 'fail'],
+        'version': ['release', 'update'],
+        'configure': ['configuration', 'config', 'setting'],
+        'run': ['execute', 'start', 'launch']
+    }
+    
+    for question_word in question_words:
+        if question_word in semantic_keywords:
+            for synonym in semantic_keywords[question_word]:
+                if synonym in text_lower:
+                    score += 1.5
     
     # Coverage bonus
-    matching_words = set(question_words) & text_words
-    coverage = len(matching_words) / len(question_words)
-    coverage_bonus = coverage * 3.0
+    if question_words:
+        coverage = len(set(question_words) & text_words) / len(question_words)
+        score += coverage * 5.0
     
-    return word_matches + tech_score + number_score + coverage_bonus
+    return score
 
-def find_relevant_context(question: str, max_results: int = 5) -> tuple[str, List[Dict]]:
-    """Find relevant context ONLY from the loaded JSON files"""
+def find_relevant_context(question: str, max_chars: int = 4000) -> tuple[str, List[Dict]]:
+    """Find relevant context from JSON files with better extraction"""
     try:
-        relevant_contexts = []
+        print(f"Searching for context for question: {question}")
+        
+        all_content = []
         relevant_links = []
         
-        # Check for direct URL matches in discourse posts
-        url_match = re.search(r'https?://[^\s]+', question)
-        if url_match:
-            target_url = url_match.group()
-            for post in discourse_posts:
-                if isinstance(post, dict) and post.get("url") == target_url:
-                    text = post.get("text", "")
-                    if text:
-                        relevant_contexts.append(text)
-                    relevant_links.append({
-                        "url": post["url"],
-                        "text": post.get("title", "Discussion")
-                    })
-                    break
-        
-        # Score and rank discourse posts by relevance
-        scored_posts = []
-        for post in discourse_posts:
+        # Process discourse posts
+        print(f"Processing {len(discourse_posts)} discourse posts...")
+        for idx, post in enumerate(discourse_posts):
             if not isinstance(post, dict):
                 continue
             
-            text = post.get("text", "")
-            title = post.get("title", "")
+            # Extract all text content from the post
+            full_text = extract_searchable_text(post)
             
-            if not text and not title:  # Skip empty posts
+            if not full_text.strip():
                 continue
             
-            # Combine title and text for scoring, giving title more weight
-            combined_text = f"{title} {title} {text}"  # Title appears twice for higher weight
-            score = calculate_relevance_score(combined_text, question)
+            score = calculate_relevance_score(full_text, question)
             
             if score > 0:
-                scored_posts.append((score, post))
+                all_content.append({
+                    'text': full_text,
+                    'score': score,
+                    'source': 'discourse',
+                    'title': post.get('title', ''),
+                    'url': post.get('url', ''),
+                    'index': idx
+                })
+                
+                # Add link if available
+                if post.get('url'):
+                    relevant_links.append({
+                        'url': post['url'],
+                        'text': post.get('title', 'Discussion')
+                    })
         
-        # Get top relevant posts
-        scored_posts.sort(key=lambda x: x[0], reverse=True)
-        for score, post in scored_posts[:max_results]:
-            text = post.get("text", "")
-            url = post.get("url", "")
-            title = post.get("title", "")
+        # Process course content
+        print(f"Processing {len(course_content)} course content entries...")
+        for idx, content in enumerate(course_content):
+            if not isinstance(content, dict):
+                continue
             
-            if text and text not in relevant_contexts:  # Avoid duplicates
-                relevant_contexts.append(text)
+            # Extract all text content
+            full_text = extract_searchable_text(content)
             
-            if url:
-                link_entry = {
-                    "url": url,
-                    "text": title if title else "Related discussion"
-                }
-                if link_entry not in relevant_links:
-                    relevant_links.append(link_entry)
+            if not full_text.strip():
+                continue
+            
+            score = calculate_relevance_score(full_text, question)
+            
+            if score > 0:
+                all_content.append({
+                    'text': full_text,
+                    'score': score,
+                    'source': 'course',
+                    'title': content.get('title', ''),
+                    'index': idx
+                })
         
-        # Score and add course content
-        scored_content = []
-        for content in course_content:
-            if isinstance(content, dict):
-                text = content.get("text", "")
-                if text:
-                    score = calculate_relevance_score(text, question)
-                    if score > 0:
-                        scored_content.append((score, text))
+        # Sort by relevance score
+        all_content.sort(key=lambda x: x['score'], reverse=True)
         
-        # Add top scoring course content
-        scored_content.sort(key=lambda x: x[0], reverse=True)
-        for score, text in scored_content[:2]:  # Limit course content
-            if text not in relevant_contexts:
-                relevant_contexts.append(text)
+        print(f"Found {len(all_content)} relevant content pieces")
+        for i, content in enumerate(all_content[:5]):
+            print(f"  #{i+1}: Score {content['score']:.1f} from {content['source']} - {content['title'][:50]}...")
         
-        # Combine all relevant contexts
-        combined_context = "\n\n---\n\n".join(relevant_contexts)
+        # Build context string within character limit
+        context_parts = []
+        total_chars = 0
         
-        return combined_context, relevant_links
+        for content in all_content:
+            text = content['text']
+            
+            # Add source information
+            source_info = f"[{content['source'].upper()}]"
+            if content['title']:
+                source_info += f" {content['title']}"
+            
+            content_block = f"{source_info}\n{text}\n"
+            
+            if total_chars + len(content_block) > max_chars:
+                # Try to fit a truncated version
+                remaining_chars = max_chars - total_chars - len(source_info) - 20
+                if remaining_chars > 100:
+                    truncated_text = text[:remaining_chars] + "..."
+                    content_block = f"{source_info}\n{truncated_text}\n"
+                    context_parts.append(content_block)
+                break
+            
+            context_parts.append(content_block)
+            total_chars += len(content_block)
+        
+        combined_context = "\n---\n".join(context_parts)
+        
+        print(f"Built context with {len(combined_context)} characters from {len(context_parts)} sources")
+        
+        # Remove duplicate links
+        unique_links = []
+        seen_urls = set()
+        for link in relevant_links:
+            if link['url'] not in seen_urls:
+                unique_links.append(link)
+                seen_urls.add(link['url'])
+        
+        return combined_context, unique_links[:10]  # Limit links
         
     except Exception as e:
         print(f"Error in find_relevant_context: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return "", []
 
 class Query(BaseModel):
@@ -221,11 +324,9 @@ class Query(BaseModel):
             return None
         
         try:
-            # Handle different base64 formats
             if self.image.startswith('data:image/'):
                 return self.image
             elif re.match(r'^[A-Za-z0-9+/]+={0,2}$', self.image):
-                # Validate base64 and add data URI prefix
                 base64.b64decode(self.image)
                 return f"data:image/png;base64,{self.image}"
             else:
@@ -236,34 +337,42 @@ class Query(BaseModel):
 
 @app.post("/api/")
 async def answer_question(query: Query):
-    """Main endpoint to answer questions using ONLY data from JSON files"""
+    """Main endpoint to answer questions"""
     try:
-        print(f"Received question: {query.question}")
+        print(f"\n=== Processing question: {query.question} ===")
         
         if not query.question.strip():
             raise HTTPException(status_code=400, detail="Question cannot be empty")
         
-        # Check if we have any data loaded
+        # Check if we have data
         if not course_content and not discourse_posts:
             return {
-                "answer": "No course materials are currently available. Please ensure the data files are properly loaded.",
+                "answer": "No course materials are currently available. Please check if the data files are loaded properly.",
                 "links": []
             }
         
-        # Find relevant context ONLY from JSON files
+        # Find relevant context
         context, links = find_relevant_context(query.question)
         
-        # If no relevant context found, be explicit about it
+        print(f"Context found: {len(context)} characters")
+        print(f"Links found: {len(links)}")
+        
+        # Always try to provide an answer if we have any data
         if not context.strip():
-            return {
-                "answer": "I couldn't find relevant information for your question in the available course materials and discussions. Please try rephrasing your question or check if the topic is covered in the course.",
-                "links": []
-            }
+            # If no specific context found, use a sample of available data
+            sample_context = ""
+            if course_content:
+                sample_text = extract_searchable_text(course_content[0])
+                sample_context += f"[COURSE CONTENT SAMPLE]\n{sample_text[:500]}...\n"
+            if discourse_posts:
+                sample_text = extract_searchable_text(discourse_posts[0])
+                sample_context += f"[DISCOURSE SAMPLE]\n{sample_text[:500]}...\n"
+            context = sample_context
         
         # Process image if provided
         image_data = query.process_image()
         
-        # Build messages for OpenAI API - context comes ONLY from JSON files
+        # Build messages for OpenAI
         messages = [
             {
                 "role": "system",
@@ -271,13 +380,13 @@ async def answer_question(query: Query):
             },
             {
                 "role": "user",
-                "content": f"""Context from course materials and discussions:
+                "content": f"""Here is the context from the Tools in Data Science course materials:
 
 {context}
 
-Question: {query.question}
+Student Question: {query.question}
 
-Please answer based ONLY on the information provided in the context above. Do not add any external knowledge."""
+Please provide a helpful answer based on the context provided. If the context doesn't fully address the question, provide what information you can and indicate what might be missing."""
             }
         ]
         
@@ -296,12 +405,13 @@ Please answer based ONLY on the information provided in the context above. Do no
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo-0125",
                 messages=messages,
-                temperature=0.05,  # Very low temperature for consistency
-                max_tokens=600
+                temperature=0.1,
+                max_tokens=800
             )
             
             if response.choices and response.choices[0].message.content:
                 answer = response.choices[0].message.content.strip()
+                print(f"Generated answer: {len(answer)} characters")
                 
                 return {
                     "answer": answer,
@@ -309,7 +419,7 @@ Please answer based ONLY on the information provided in the context above. Do no
                 }
             else:
                 return {
-                    "answer": "I couldn't generate a response from the available course materials.",
+                    "answer": "I was unable to generate a response. Please try rephrasing your question.",
                     "links": []
                 }
                 
@@ -324,6 +434,8 @@ Please answer based ONLY on the information provided in the context above. Do no
         raise
     except Exception as e:
         print(f"Error in answer_question: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/health")
@@ -337,44 +449,45 @@ async def health_check():
         "openai_configured": bool(OPENAI_API_KEY)
     }
 
-@app.get("/api/data-summary")
-async def data_summary():
-    """Endpoint to check what data is loaded"""
-    course_sample = []
-    discourse_sample = []
-    
-    # Get sample of course content
-    for i, content in enumerate(course_content[:3]):
-        if isinstance(content, dict):
-            sample = {
-                "index": i,
-                "keys": list(content.keys()),
-                "text_length": len(content.get("text", ""))
-            }
-            course_sample.append(sample)
-    
-    # Get sample of discourse posts
-    for i, post in enumerate(discourse_posts[:3]):
-        if isinstance(post, dict):
-            sample = {
-                "index": i,
-                "keys": list(post.keys()),
-                "title": post.get("title", "")[:50] + "..." if post.get("title", "") else "",
-                "text_length": len(post.get("text", "")),
-                "has_url": bool(post.get("url"))
-            }
-            discourse_sample.append(sample)
-    
-    return {
+@app.get("/api/debug")
+async def debug_data():
+    """Debug endpoint to see what data is actually loaded"""
+    debug_info = {
         "course_content": {
-            "total_entries": len(course_content),
-            "sample": course_sample
+            "count": len(course_content),
+            "samples": []
         },
         "discourse_posts": {
-            "total_entries": len(discourse_posts),
-            "sample": discourse_sample
+            "count": len(discourse_posts),
+            "samples": []
         }
     }
+    
+    # Sample course content
+    for i, item in enumerate(course_content[:3]):
+        if isinstance(item, dict):
+            sample = {
+                "index": i,
+                "type": type(item).__name__,
+                "keys": list(item.keys()),
+                "text_preview": extract_searchable_text(item)[:200] + "..." if extract_searchable_text(item) else "No text"
+            }
+            debug_info["course_content"]["samples"].append(sample)
+    
+    # Sample discourse posts
+    for i, item in enumerate(discourse_posts[:3]):
+        if isinstance(item, dict):
+            sample = {
+                "index": i,
+                "type": type(item).__name__,
+                "keys": list(item.keys()),
+                "title": item.get("title", "No title")[:100],
+                "has_url": bool(item.get("url")),
+                "text_preview": extract_searchable_text(item)[:200] + "..." if extract_searchable_text(item) else "No text"
+            }
+            debug_info["discourse_posts"]["samples"].append(sample)
+    
+    return debug_info
 
 if __name__ == "__main__":
     import uvicorn
