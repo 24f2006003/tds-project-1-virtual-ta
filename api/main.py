@@ -46,8 +46,8 @@ def resolve_path(relative_path: str) -> str:
         # On Vercel, use /var/task
         return os.path.join("/var/task", relative_path)
     else:
-        # Local development - use current directory
-        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Local development - use parent directory of api folder
+        current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         return os.path.join(current_dir, relative_path)
 
 # Load data files
@@ -80,36 +80,53 @@ def find_relevant_context(question: str, max_results: int = 3) -> Tuple[str, Lis
     try:
         relevant_posts = []
         
-        # Simple keyword matching - in a production environment, you'd want to use
-        # embeddings and semantic search for better results
-        keywords = question.lower().split()
+        # Check for exact URL matches first
+        url_matches = []
+        for post in discourse_posts:
+            if isinstance(post, dict) and "url" in post:
+                if post["url"] in question:
+                    url_matches.append(post)
         
-        # Search discourse posts
-        post_scores = []
-        for idx, post in enumerate(discourse_posts):
-            post_text = post.get("text", "") if isinstance(post, dict) else str(post)
-            score = sum(1 for keyword in keywords if keyword in post_text.lower())
-            if score > 0:
-                # Include the index to ensure stable sorting
-                post_scores.append((score, idx, post))
-        
-        # Get top matching posts
-        sorted_posts = sorted(post_scores, key=lambda x: (-x[0], x[1]))  # Sort by score desc, then index asc
-        relevant_posts = [post for _, _, post in sorted_posts[:max_results]]
+        if url_matches:
+            relevant_posts = url_matches
+        else:
+            # Simple keyword matching if no exact URL matches
+            keywords = question.lower().split()
+            
+            # Search discourse posts
+            post_scores = []
+            for idx, post in enumerate(discourse_posts):
+                if not isinstance(post, dict):
+                    continue
+                    
+                post_text = post.get("text", "").lower()
+                title = post.get("title", "").lower()
+                
+                # Calculate score based on both title and text matches
+                score = sum(1 for keyword in keywords if keyword in post_text)
+                score += sum(2 for keyword in keywords if keyword in title)  # Title matches count double
+                
+                if score > 0:
+                    post_scores.append((score, idx, post))
+            
+            # Get top matching posts
+            sorted_posts = sorted(post_scores, key=lambda x: (-x[0], x[1]))
+            relevant_posts = [post for _, _, post in sorted_posts[:max_results]]
         
         # Get course content
         course_context = ""
         if course_content and len(course_content) > 0:
-            # Get the overview text from course content
-            course_context = course_content[0].get("text", "")[:2000]  # Take first 2000 chars of course content
+            course_context = course_content[0].get("text", "")[:2000]
         
         # Combine context
         contexts = []
         if course_context:
             contexts.append(course_context)
         for post in relevant_posts:
-            post_text = post.get("text", "") if isinstance(post, dict) else str(post)
-            contexts.append(post_text[:500])  # Take first 500 chars of each post
+            if isinstance(post, dict):
+                post_text = post.get("text", "")
+                if post_text:
+                    contexts.append(post_text[:500])
         
         combined_context = "\n\n".join(contexts)
         return combined_context, relevant_posts
@@ -203,12 +220,19 @@ IMPORTANT: Only answer based on the context above. If the context doesn't contai
         
         try:
             # Get answer from OpenAI
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",  # Using gpt-4o-mini as it's supported by the AI proxy
-                messages=messages,
-                temperature=0.05,  # Set to 0.05 for slight randomness while maintaining focus
-                max_tokens=500  # Set to 500 for concise, focused answers without unnecessary verbosity
-            )
+            completion_config = {
+                "messages": messages,
+                "temperature": 0.05,  # Low temperature for consistent responses
+                "max_tokens": 500     # Limit response length
+            }
+            
+            # Check if we're using the AI proxy or direct OpenAI
+            if OPENAI_BASE_URL and "ai-proxy" in OPENAI_BASE_URL:
+                completion_config["model"] = "gpt-4o-mini"  # Use gpt-4o-mini with AI proxy
+            else:
+                completion_config["model"] = "gpt-3.5-turbo-0125"  # Use GPT-3.5-Turbo with direct OpenAI API
+                
+            response = client.chat.completions.create(**completion_config)
             # Check for errors in the response
             if response.choices[0].message.content:
                 # Extract relevant links
