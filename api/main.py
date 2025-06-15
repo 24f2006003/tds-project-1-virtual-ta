@@ -70,13 +70,13 @@ def get_system_prompt():
     """System prompt for the Virtual TA"""
     return (
         "You are a Virtual Teaching Assistant for the Tools in Data Science course at IIT Madras. "
-        "Answer questions using ONLY the provided context from course materials and discourse discussions. "
-        "\nGuidelines:\n"
-        "1. Use the provided context to answer questions accurately\n"
-        "2. Quote specific details from the context when relevant\n"
-        "3. If the context doesn't contain the requested information, state that it's not available\n"
-        "4. Include links when provided in the context\n"
-        "5. Be helpful and direct in your responses\n"
+        "Answer questions using ONLY the provided context. Be concise and direct.\n"
+        "Rules:\n"
+        "1. Give short, specific answers from the context\n"
+        "2. If information is not in context, say 'Information not available in course materials'\n"
+        "3. Don't add explanations beyond what's in the context\n"
+        "4. For dates/deadlines, only state what's explicitly mentioned\n"
+        "5. Keep responses under 100 words unless detailed explanation is needed\n"
     )
 
 def extract_text_content(item: Any) -> str:
@@ -288,13 +288,11 @@ async def answer_question(query: Query):
             },
             {
                 "role": "user",
-                "content": f"""Context from course materials:
+                "content": f"""Context: {context}
 
-{context}
+Question: {query.question}
 
-Student Question: {query.question}
-
-Please answer based on the provided context."""
+Answer briefly and directly from the context only."""
             }
         ]
         
@@ -303,8 +301,8 @@ Please answer based on the provided context."""
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=messages,
-                temperature=0.1,
-                max_tokens=800
+                temperature=0.0,
+                max_tokens=200  # Limit response length
             )
             
             if response.choices and response.choices[0].message.content:
