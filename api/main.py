@@ -43,11 +43,12 @@ client = OpenAI(
 def get_system_prompt():
     return (
         "You are a Virtual Teaching Assistant for the Tools in Data Science course at IIT Madras. "
-        "Your responses must strictly follow these guidelines:\n\n"
-        "1. CONTEXT ADHERENCE:\n"
-        "   - Only provide information explicitly present in the given context\n"
-        "   - If information is not in context, respond: 'I cannot answer this question based on the provided course materials'\n"
-        "   - Never make assumptions or use external knowledge\n\n"
+        "You are helpful and informative, providing detailed answers based on course materials. "
+        "Your responses must follow these guidelines:\n\n"
+        "1. CONTEXT UTILIZATION:\n"
+        "   - Use information from the provided context as your primary source\n"
+        "   - When specific details aren't available, provide general guidance based on course principles\n"
+        "   - Use your knowledge to explain concepts mentioned in the context\n\n"
         "2. TECHNICAL QUESTIONS:\n"
         "   - For tool choices: Use recommendations from course documentation\n"
         "   - For model/API choices: Refer to official course guidelines\n"
@@ -102,10 +103,17 @@ def load_data():
 # Load data at startup
 course_content, discourse_posts = load_data()
 
-def find_relevant_context(question: str, max_results: int = 3) -> Tuple[str, List[Dict]]:
+def find_relevant_context(question: str, max_results: int = 5) -> Tuple[str, List[Dict]]:
     """Find relevant context from course content and discourse posts."""
     try:
         relevant_posts = []
+        
+        # Prepare question for matching
+        question_lower = question.lower()
+        # Break into word groups for better matching
+        question_words = question_lower.split()
+        question_bigrams = [f"{question_words[i]} {question_words[i+1]}" for i in range(len(question_words)-1)]
+        question_trigrams = [f"{question_words[i]} {question_words[i+1]} {question_words[i+2]}" for i in range(len(question_words)-2)]
         
         # Check for exact URL matches first
         url_matches = []
@@ -113,32 +121,53 @@ def find_relevant_context(question: str, max_results: int = 3) -> Tuple[str, Lis
             if isinstance(post, dict) and "url" in post:
                 if post["url"] in question:
                     url_matches.append(post)
-        
-        if url_matches:
-            relevant_posts = url_matches
-        else:
-            # Simple keyword matching if no exact URL matches
-            keywords = question.lower().split()
-            
-            # Search discourse posts
-            post_scores = []
-            for idx, post in enumerate(discourse_posts):
-                if not isinstance(post, dict):
-                    continue
                     
-                post_text = post.get("text", "").lower()
-                title = post.get("title", "").lower()
-                
-                # Calculate score based on both title and text matches
-                score = sum(1 for keyword in keywords if keyword in post_text)
-                score += sum(2 for keyword in keywords if keyword in title)  # Title matches count double
-                
-                if score > 0:
-                    post_scores.append((score, idx, post))
+        # Score calculation helper
+        def calculate_match_score(text: str, title: str = "") -> float:
+            text = text.lower()
+            title = title.lower()
+            score = 0.0
             
-            # Get top matching posts
+            # Word matches
+            score += sum(2.0 for word in question_words if word in text)
+            score += sum(3.0 for word in question_words if title and word in title)
+            
+            # Phrase matches (weighted higher)
+            score += sum(5.0 for bigram in question_bigrams if bigram in text)
+            score += sum(7.0 for bigram in question_bigrams if title and bigram in title)
+            score += sum(10.0 for trigram in question_trigrams if trigram in text)
+            score += sum(15.0 for trigram in question_trigrams if title and trigram in title)
+            
+            # Boost score if all question words appear
+            if all(word in text or (title and word in title) for word in question_words):
+                score *= 1.5
+                
+            return score
+        
+        # Process all discourse posts
+        post_scores = []
+        for idx, post in enumerate(discourse_posts):
+            if not isinstance(post, dict):
+                continue
+                
+            text = post.get("text", "")
+            title = post.get("title", "")
+            
+            # Calculate comprehensive match score
+            score = calculate_match_score(text, title)
+            
+            if score > 0:
+                post_scores.append((score, idx, post))
+        
+        # Combine URL matches and scored matches
+        if url_matches:
+            relevant_posts.extend(url_matches)
+            max_results -= len(url_matches)
+            
+        # Add top scoring posts
+        if max_results > 0:
             sorted_posts = sorted(post_scores, key=lambda x: (-x[0], x[1]))
-            relevant_posts = [post for _, _, post in sorted_posts[:max_results]]
+            relevant_posts.extend([post for _, _, post in sorted_posts[:max_results]])
         
         # Get course content
         course_context = ""
@@ -326,14 +355,23 @@ def process_question(question: str, context: str) -> tuple[str, List[Dict[str, s
     analyzer = QuestionAnalyzer()
     question_types = analyzer.identify_question_type(question)
     additional_docs = analyzer.get_relevant_docs(question_types)
+      # Enhance context with course-specific knowledge when needed
+    if not context:
+        base_context = "This is regarding the Tools in Data Science course at IIT Madras, a practical diploma-level course. "
+        
+        if QuestionType.TOOL_CHOICE in question_types:
+            context = base_context + "The course emphasizes using modern tools and best practices in data science."
+        elif QuestionType.MODEL_CHOICE in question_types:
+            context = base_context + "The course uses various AI models and tools for data science tasks."
+        elif QuestionType.EXAM_SCHEDULE in question_types:
+            context = base_context + "The course includes various assessments including gradable assignments (GA) and examinations."
+        elif QuestionType.GRADING in question_types:
+            context = base_context + "The course uses a comprehensive grading system including regular assessments and bonus points."
     
-    # If no context is found for specific question types, provide a clear "cannot answer" response
-    if not context and any(qt in [QuestionType.EXAM_SCHEDULE, QuestionType.GRADING] for qt in question_types):
-        return "I cannot provide this information as it is not available in the provided course materials.", additional_docs
-    
-    # For future dates not in context
-    if QuestionType.EXAM_SCHEDULE in question_types and "2025" in question.lower():
-        if not any(date in context.lower() for date in ["2025", "sep 2025", "september 2025"]):
-            return "I cannot provide information about future exam dates as this information is not available in the provided course materials.", []
+    # Add hints for common scenarios
+    if QuestionType.TOOL_CHOICE in question_types:
+        context += "\nThe course encourages using industry-standard tools and following best practices."
+    elif QuestionType.MODEL_CHOICE in question_types:
+        context += "\nThe course recommends using the most appropriate and efficient tools for each task."
     
     return context, additional_docs
