@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Tuple
 import os
 import json
 from openai import OpenAI
+import re
 
 # Only load dotenv in development
 try:
@@ -40,15 +41,64 @@ client = OpenAI(
     base_url=OPENAI_BASE_URL
 )
 
+# Topic patterns for context matching
+topic_patterns = {
+    'technical_tools': [
+        r'\b(?:tool|software|package|library|framework)\b',
+        r'\b(?:install|setup|configure|run)\b',
+        r'\b(?:vs\.|versus|or|compare|better)\b'
+    ],
+    'course_schedule': [
+        r'\b(?:date|time|deadline|when|schedule)\b',
+        r'\b(?:exam|test|assignment|ga\d+)\b',
+        r'\b(?:due|submission|end)\b'
+    ],
+    'grading': [
+        r'\b(?:grade|score|mark|point|credit)\b',
+        r'\b(?:bonus|extra|additional)\b',
+        r'\b(?:dashboard|report|display)\b'
+    ],
+    'technical_requirements': [
+        r'\b(?:version|compatibility|support)\b',
+        r'\b(?:require|need|must|should)\b',
+        r'\b(?:api|model|engine)\b'
+    ],
+    'course_content': [
+        r'\b(?:lecture|material|content|topic)\b',
+        r'\b(?:cover|discuss|explain|mean)\b',
+        r'\b(?:concept|theory|practice)\b'
+    ]
+}
+
+def analyze_question_topics(question: str) -> Dict[str, float]:
+    """
+    Analyze the question to identify relevant topics and their importance
+    Returns a dictionary of topics and their relevance scores
+    """
+    question_lower = question.lower()
+    topic_scores = {}
+    
+    # Score each topic based on pattern matches
+    for topic, patterns in topic_patterns.items():
+        score = 0.0
+        for pattern in patterns:
+            matches = len(re.findall(pattern, question_lower))
+            if matches > 0:
+                score += matches * 0.5
+        if score > 0:
+            topic_scores[topic] = score
+            
+    return topic_scores
+
 def get_system_prompt():
     return (
         "You are a Virtual Teaching Assistant for the Tools in Data Science course at IIT Madras. "
-        "You are helpful and informative, providing detailed answers based on course materials. "
-        "Your responses must follow these guidelines:\n\n"
-        "1. CONTEXT UTILIZATION:\n"
-        "   - Use information from the provided context as your primary source\n"
-        "   - When specific details aren't available, provide general guidance based on course principles\n"
-        "   - Use your knowledge to explain concepts mentioned in the context\n\n"
+        "You are helpful, informative, and accurate in your responses. Your goal is to assist students "
+        "by providing clear, specific guidance based on course materials. Follow these guidelines:\n\n"
+        "1. RESPONSE APPROACH:\n"
+        "   - Be direct and specific in your answers\n"
+        "   - When technical details are mentioned in context (versions, tools, numbers), use them exactly\n"
+        "   - Explain your recommendations, don't just state them\n\n"
         "2. TECHNICAL QUESTIONS:\n"
         "   - For tool choices: Use recommendations from course documentation\n"
         "   - For model/API choices: Refer to official course guidelines\n"
@@ -103,87 +153,99 @@ def load_data():
 # Load data at startup
 course_content, discourse_posts = load_data()
 
+def score_text_relevance(text: str, title: str, question: str, question_topics: Dict[str, float]) -> float:
+    """Score how relevant a text is to the question"""
+    if not text:
+        return 0.0
+        
+    text_lower = text.lower()
+    title_lower = title.lower() if title else ""
+    question_lower = question.lower()
+    
+    # Get question words (excluding very short words)
+    question_words = [w for w in question_lower.split() if len(w) > 2]
+    
+    # Basic text matching
+    text_words = set(text_lower.split())
+    title_words = set(title_lower.split()) if title else set()
+    
+    score = 0.0
+    
+    # Word matching score
+    word_matches = sum(1 for w in question_words if w in text_words)
+    title_matches = sum(2 for w in question_words if w in title_words)  # Title matches count double
+    score += word_matches + title_matches
+    
+    # Topic relevance score
+    for topic, topic_score in question_topics.items():
+        if any(re.search(pattern, text_lower) for pattern in topic_patterns[topic]):
+            score += topic_score * 1.5  # Topic matches are important
+            
+    # Special term matching
+    tech_terms = set(re.findall(r'\b[a-zA-Z]+[-\.][a-zA-Z0-9\.-]+\b', text))  # Find version numbers, technical terms
+    numbers = set(re.findall(r'\b\d+(?:[\/\.]\d+)*\b', text))  # Find numeric values
+    
+    score += sum(3.0 for term in tech_terms if term.lower() in question_lower)  # Technical terms are very important
+    score += sum(2.0 for num in numbers if num in question_lower)  # Numeric matches are important
+    
+    # Coverage bonus
+    word_coverage = len(set(question_words) & text_words) / len(question_words)
+    if word_coverage > 0.5:
+        score *= (1.0 + word_coverage)  # Boost score if many question words are found
+        
+    return score
+
 def find_relevant_context(question: str, max_results: int = 5) -> Tuple[str, List[Dict]]:
     """Find relevant context from course content and discourse posts."""
     try:
-        relevant_posts = []
-        
-        # Prepare question for matching
-        question_lower = question.lower()
-        # Break into word groups for better matching
-        question_words = question_lower.split()
-        question_bigrams = [f"{question_words[i]} {question_words[i+1]}" for i in range(len(question_words)-1)]
-        question_trigrams = [f"{question_words[i]} {question_words[i+1]} {question_words[i+2]}" for i in range(len(question_words)-2)]
-        
-        # Check for exact URL matches first
-        url_matches = []
-        for post in discourse_posts:
-            if isinstance(post, dict) and "url" in post:
-                if post["url"] in question:
-                    url_matches.append(post)
-                    
-        # Score calculation helper
-        def calculate_match_score(text: str, title: str = "") -> float:
-            text = text.lower()
-            title = title.lower()
-            score = 0.0
-            
-            # Word matches
-            score += sum(2.0 for word in question_words if word in text)
-            score += sum(3.0 for word in question_words if title and word in title)
-            
-            # Phrase matches (weighted higher)
-            score += sum(5.0 for bigram in question_bigrams if bigram in text)
-            score += sum(7.0 for bigram in question_bigrams if title and bigram in title)
-            score += sum(10.0 for trigram in question_trigrams if trigram in text)
-            score += sum(15.0 for trigram in question_trigrams if title and trigram in title)
-            
-            # Boost score if all question words appear
-            if all(word in text or (title and word in title) for word in question_words):
-                score *= 1.5
-                
-            return score
+        # Initial analysis
+        question_topics = analyze_question_topics(question)
         
         # Process all discourse posts
-        post_scores = []
+        scored_posts = []
         for idx, post in enumerate(discourse_posts):
             if not isinstance(post, dict):
                 continue
                 
+            # High score for exact URL matches
+            if "url" in post and post["url"] in question:
+                scored_posts.append((100.0, idx, post))
+                continue
+                
+            # Score post content
             text = post.get("text", "")
             title = post.get("title", "")
-            
-            # Calculate comprehensive match score
-            score = calculate_match_score(text, title)
+            score = score_text_relevance(text, title, question, question_topics)
             
             if score > 0:
-                post_scores.append((score, idx, post))
+                scored_posts.append((score, idx, post))
         
-        # Combine URL matches and scored matches
-        if url_matches:
-            relevant_posts.extend(url_matches)
-            max_results -= len(url_matches)
-            
-        # Add top scoring posts
-        if max_results > 0:
-            sorted_posts = sorted(post_scores, key=lambda x: (-x[0], x[1]))
-            relevant_posts.extend([post for _, _, post in sorted_posts[:max_results]])
+        # Sort posts by relevance score and get top matches
+        sorted_posts = sorted(scored_posts, key=lambda x: (-x[0], x[1]))
+        relevant_posts = [post for _, _, post in sorted_posts[:max_results]]
         
-        # Get course content
+        # Get course content with score
         course_context = ""
         if course_content and len(course_content) > 0:
-            course_context = course_content[0].get("text", "")[:2000]
-        
-        # Combine context
+            text = course_content[0].get("text", "")
+            score = score_text_relevance(text, "", question, question_topics)
+            if score > 0:
+                course_context = text[:2000]  # Keep substantial context
+                
+        # Combine contexts intelligently
         contexts = []
         if course_context:
             contexts.append(course_context)
+            
         for post in relevant_posts:
             if isinstance(post, dict):
                 post_text = post.get("text", "")
-                if post_text:
-                    contexts.append(post_text[:500])
-        
+                # Include more context for highly relevant posts
+                if post.get("url", "") in question:
+                    contexts.append(post_text)  # Full text for URL matches
+                else:
+                    contexts.append(post_text[:500])  # Limited context for others
+                    
         combined_context = "\n\n".join(contexts)
         return combined_context, relevant_posts
     except Exception as e:
@@ -191,7 +253,6 @@ def find_relevant_context(question: str, max_results: int = 5) -> Tuple[str, Lis
         return "", []
 
 import base64
-import re
 
 class Query(BaseModel):
     question: str
@@ -391,8 +452,10 @@ def process_question(question: str, context: str) -> tuple[str, List[Dict[str, s
     analyzer = QuestionAnalyzer()
     question_types = analyzer.identify_question_type(question)
     additional_docs = analyzer.get_relevant_docs(question_types)
-      # Enhance context with course-specific knowledge when needed
+    
+    # Keep existing context if available
     if not context:
+        context = ""
         base_context = "This is regarding the Tools in Data Science course at IIT Madras, a practical diploma-level course. "
         
         if QuestionType.TOOL_CHOICE in question_types:
@@ -411,3 +474,31 @@ def process_question(question: str, context: str) -> tuple[str, List[Dict[str, s
         context += "\nThe course recommends using the most appropriate and efficient tools for each task."
     
     return context, additional_docs
+
+# Define topic patterns at module level for reuse
+topic_patterns = {
+        'technical_tools': [
+            r'\b(?:tool|software|package|library|framework)\b',
+            r'\b(?:install|setup|configure|run)\b',
+            r'\b(?:vs\.|versus|or|compare|better)\b'
+        ],
+        'course_schedule': [
+            r'\b(?:date|time|deadline|when|schedule)\b',
+            r'\b(?:exam|test|assignment|ga\d+)\b',
+            r'\b(?:due|submission|end)\b'
+        ],
+        'grading': [
+            r'\b(?:grade|score|mark|point|credit)\b',
+            r'\b(?:bonus|extra|additional)\b',
+            r'\b(?:dashboard|report|display)\b'
+        ],
+        'technical_requirements': [
+            r'\b(?:version|compatibility|support)\b',
+            r'\b(?:require|need|must|should)\b',
+            r'\b(?:api|model|engine)\b'
+        ],
+        'course_content': [
+            r'\b(?:lecture|material|content|topic)\b',
+            r'\b(?:cover|discuss|explain|mean)\b',
+            r'\b(?:concept|theory|practice)\b'
+        ]    }
