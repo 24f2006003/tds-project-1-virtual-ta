@@ -101,184 +101,95 @@ def extract_text_content(item: Any) -> str:
     else:
         return str(item) if item is not None else ""
 
-def search_content(question: str, max_results: int = 15) -> List[Dict]:
-    """Search through all content with much more flexible matching"""
+def simple_search(question: str) -> List[Dict]:
+    """Simple text search that actually finds content"""
     question_lower = question.lower()
-    question_words = re.findall(r'\b\w+\b', question_lower)
-    
-    # Remove common stop words but keep important ones
-    stop_words = {'the', 'is', 'at', 'which', 'on', 'a', 'an', 'as', 'are', 'was', 'were', 'been', 'be'}
-    question_words = [w for w in question_words if w not in stop_words or len(w) >= 4]
-    
     results = []
     
-    # Search discourse posts first (higher priority)
+    print(f"Searching for: '{question}'")
+    print(f"Available discourse posts: {len(discourse_posts)}")
+    print(f"Available course content: {len(course_content)}")
+    
+    # Search discourse posts - just check if ANY word from question appears in content
     for idx, post in enumerate(discourse_posts):
-        if not isinstance(post, dict):
-            continue
+        try:
+            content_text = extract_text_content(post)
+            if not content_text:
+                continue
             
-        content_text = extract_text_content(post)
-        if not content_text:
-            continue
+            content_lower = content_text.lower()
             
-        content_lower = content_text.lower()
-        
-        # Calculate match score with more generous scoring
-        score = 0
-        
-        # Exact phrase matching (higher weight)
-        if len(question_words) >= 2:
-            for i in range(len(question_words) - 1):
-                phrase = f"{question_words[i]} {question_words[i+1]}"
-                if phrase in content_lower:
-                    score += 20  # High weight for phrases
-        
-        # Individual word matching - more generous
-        for word in question_words:
-            if len(word) >= 2:  # Lowered from 3 to 2
-                # Count occurrences
-                word_count = len(re.findall(r'\b' + re.escape(word) + r'\b', content_lower))
-                if word_count > 0:
-                    score += word_count * 3  # Higher base score
-                
-                # Partial word matching for longer words
-                if len(word) >= 4:
-                    partial_matches = len(re.findall(re.escape(word), content_lower))
-                    score += partial_matches * 1
-        
-        # Title matching bonus - very high priority
-        title = post.get('title', '').lower()
-        if title:
+            # Very simple matching - if any significant word appears, include it
+            question_words = [w for w in question_lower.split() if len(w) > 2]
+            
+            found_match = False
             for word in question_words:
-                if len(word) >= 2 and word in title:
-                    score += 15  # Very high bonus for title matches
+                if word in content_lower:
+                    found_match = True
+                    break
+            
+            if found_match:
+                results.append({
+                    'content': content_text,
+                    'source': 'discourse',
+                    'title': post.get('title', 'Discussion Post'),
+                    'url': post.get('url', '#'),
+                    'raw_data': post
+                })
+                print(f"Found discourse match: {post.get('title', 'No title')[:50]}")
         
-        # Keyword-based bonuses for specific topics
-        if any(word in question_lower for word in ['gpt', 'model', 'turbo', 'api', 'openai']):
-            if any(term in content_lower for term in ['gpt', 'model', 'turbo', 'api', 'openai', 'ai-proxy']):
-                score += 10
-        
-        if any(word in question_lower for word in ['docker', 'podman', 'container']):
-            if any(term in content_lower for term in ['docker', 'podman', 'container']):
-                score += 10
-        
-        if any(word in question_lower for word in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
-            if any(term in content_lower for term in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
-                score += 10
-        
-        # Special patterns
-        if re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', content_text):  # Dates
-            if any(word in question_lower for word in ['date', 'when', 'schedule', 'exam', 'deadline']):
-                score += 8
-                
-        if 'http' in content_text and 'link' in question_lower:
-            score += 5
-        
-        # Much lower threshold for inclusion - include even weak matches
-        if score > 0:
-            results.append({
-                'content': content_text,
-                'score': score,
-                'source': 'discourse',
-                'title': post.get('title', 'Discussion'),
-                'url': post.get('url', ''),
-                'type': 'post',
-                'raw_data': post
-            })
+        except Exception as e:
+            print(f"Error processing discourse post {idx}: {e}")
+            continue
     
-    # Search course content with same generous approach
+    # Search course content
     for idx, content_item in enumerate(course_content):
-        if not isinstance(content_item, dict):
-            continue
+        try:
+            content_text = extract_text_content(content_item)
+            if not content_text:
+                continue
             
-        content_text = extract_text_content(content_item)
-        if not content_text:
-            continue
+            content_lower = content_text.lower()
             
-        content_lower = content_text.lower()
-        
-        # Calculate match score
-        score = 0
-        
-        # Exact phrase matching
-        if len(question_words) >= 2:
-            for i in range(len(question_words) - 1):
-                phrase = f"{question_words[i]} {question_words[i+1]}"
-                if phrase in content_lower:
-                    score += 15
-        
-        # Individual word matching - more generous
-        for word in question_words:
-            if len(word) >= 2:
-                word_count = len(re.findall(r'\b' + re.escape(word) + r'\b', content_lower))
-                if word_count > 0:
-                    score += word_count * 2
-                
-                # Partial matching for longer words
-                if len(word) >= 4:
-                    partial_matches = len(re.findall(re.escape(word), content_lower))
-                    score += partial_matches * 1
-        
-        # Title matching bonus
-        title = content_item.get('title', '').lower()
-        if title:
+            # Very simple matching
+            question_words = [w for w in question_lower.split() if len(w) > 2]
+            
+            found_match = False
             for word in question_words:
-                if len(word) >= 2 and word in title:
-                    score += 12
+                if word in content_lower:
+                    found_match = True
+                    break
+            
+            if found_match:
+                results.append({
+                    'content': content_text,
+                    'source': 'course',
+                    'title': content_item.get('title', 'Course Content'),
+                    'url': content_item.get('url', '#'),
+                    'raw_data': content_item
+                })
+                print(f"Found course match: {content_item.get('title', 'No title')[:50]}")
         
-        # Keyword-based bonuses
-        if any(word in question_lower for word in ['gpt', 'model', 'turbo', 'api', 'openai']):
-            if any(term in content_lower for term in ['gpt', 'model', 'turbo', 'api', 'openai', 'ai-proxy']):
-                score += 8
-        
-        if any(word in question_lower for word in ['docker', 'podman', 'container']):
-            if any(term in content_lower for term in ['docker', 'podman', 'container']):
-                score += 8
-        
-        if any(word in question_lower for word in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
-            if any(term in content_lower for term in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
-                score += 8
-        
-        # Special patterns
-        if re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', content_text):  # Dates
-            if any(word in question_lower for word in ['date', 'when', 'schedule', 'exam', 'deadline']):
-                score += 6
-                
-        if score > 0:
-            results.append({
-                'content': content_text,
-                'score': score,
-                'source': 'course',
-                'title': content_item.get('title', 'Course Content'),
-                'type': 'content',
-                'raw_data': content_item
-            })
+        except Exception as e:
+            print(f"Error processing course content {idx}: {e}")
+            continue
     
-    # Sort by score and return top results
-    results.sort(key=lambda x: x['score'], reverse=True)
-    return results[:max_results]
+    print(f"Total matches found: {len(results)}")
+    return results
 
-def build_context(question: str, max_chars: int = 8000) -> tuple[str, List[Dict]]:
-    """Build context string from search results with improved link handling"""
-    search_results = search_content(question)
-    
-    print(f"Question: {question}")
-    print(f"Found {len(search_results)} total results")
+def build_context(question: str) -> tuple[str, List[Dict]]:
+    """Build context from search results"""
+    search_results = simple_search(question)
     
     if not search_results:
-        print(f"No search results found for: {question}")
+        print("No search results found")
         return "", []
     
-    # Show top results for debugging
-    for i, result in enumerate(search_results[:5]):
-        print(f"  Result {i+1}: Score {result['score']}, Source: {result['source']}, Title: {result.get('title', 'No title')[:50]}")
-        print(f"    Content preview: {result['content'][:100]}...")
-    
     context_parts = []
-    total_chars = 0
     links = []
     
-    for result in search_results:
+    # Take first 5 results to avoid token limits
+    for result in search_results[:5]:
         content = result['content']
         title = result.get('title', '')
         
@@ -288,67 +199,16 @@ def build_context(question: str, max_chars: int = 8000) -> tuple[str, List[Dict]
             header += f" {title}"
         
         content_block = f"{header}\n{content}\n"
-        
-        # Check if we can fit this content
-        if total_chars + len(content_block) > max_chars:
-            # Try to fit a truncated version
-            remaining = max_chars - total_chars - len(header) - 10
-            if remaining > 200:
-                truncated = content[:remaining] + "..."
-                content_block = f"{header}\n{truncated}\n"
-                context_parts.append(content_block)
-            break
-        
         context_parts.append(content_block)
-        total_chars += len(content_block)
         
-        # Always try to collect links - improved link handling
-        link_url = None
-        link_text = title or 'Related Content'
-        
-        # For discourse posts, try multiple ways to get URL
-        if result['source'] == 'discourse':
-            raw_data = result.get('raw_data', {})
-            # Try different URL fields that might exist in discourse data
-            link_url = (raw_data.get('url') or 
-                       raw_data.get('link') or 
-                       raw_data.get('discourse_url') or
-                       raw_data.get('post_url'))
-            
-            # If no direct URL, try to construct one from available data
-            if not link_url and raw_data.get('id'):
-                # This is a fallback - you might need to adjust based on your discourse setup
-                link_url = f"#discourse-post-{raw_data['id']}"
-        
-        # For course content, try to get any available URL
-        elif result['source'] == 'course':
-            raw_data = result.get('raw_data', {})
-            link_url = (raw_data.get('url') or 
-                       raw_data.get('link') or 
-                       raw_data.get('content_url'))
-        
-        # Add link if we have one, or create a reference link
-        if link_url:
-            links.append({
-                'url': link_url,
-                'text': link_text
-            })
-        else:
-            # Even without URL, provide a reference
-            links.append({
-                'url': '#',
-                'text': f"{link_text} (Reference)"
-            })
-    
-    # Always ensure we have at least one link if we have content
-    if context_parts and not links:
+        # Add link
         links.append({
-            'url': '#course-materials',
-            'text': 'Course Materials Reference'
+            'url': result.get('url', '#'),
+            'text': title or 'Related Content'
         })
     
     context = "\n---\n".join(context_parts)
-    print(f"Built context: {len(context)} chars from {len(context_parts)} sources")
+    print(f"Built context with {len(context)} characters from {len(context_parts)} sources")
     
     return context, links
 
@@ -363,6 +223,8 @@ async def answer_question(query: Query):
         if not query.question.strip():
             raise HTTPException(status_code=400, detail="Question cannot be empty")
         
+        print(f"Processing question: {query.question}")
+        
         if not course_content and not discourse_posts:
             return {
                 "answer": "No course materials are currently available.",
@@ -373,13 +235,9 @@ async def answer_question(query: Query):
         context, links = build_context(query.question)
         
         if not context.strip():
-            # Even if no context, provide a helpful response with links
             return {
-                "answer": "I couldn't find specific information about your question in the course materials. Please check the course content or contact the instructor for more details.",
-                "links": [
-                    {'url': '#course-materials', 'text': 'Course Materials'},
-                    {'url': '#discourse-discussions', 'text': 'Course Discussions'}
-                ]
+                "answer": "Information not available in course materials",
+                "links": [{'url': '#course-materials', 'text': 'Course Materials Reference'}]
             }
         
         # Prepare messages for OpenAI
@@ -404,7 +262,7 @@ Answer briefly and directly from the context only."""
                 model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.0,
-                max_tokens=200  # Limit response length
+                max_tokens=200
             )
             
             if response.choices and response.choices[0].message.content:
@@ -416,7 +274,7 @@ Answer briefly and directly from the context only."""
                 
                 return {
                     "answer": answer,
-                    "links": links[:5]  # Limit links
+                    "links": links[:5]
                 }
             else:
                 return {
@@ -427,7 +285,7 @@ Answer briefly and directly from the context only."""
         except Exception as api_error:
             print(f"OpenAI API error: {str(api_error)}")
             return {
-                "answer": "I'm having trouble processing your question right now. Please try again later.",
+                "answer": f"API Error: {str(api_error)}",
                 "links": links if links else [{'url': '#', 'text': 'Course Materials'}]
             }
             
@@ -435,7 +293,32 @@ Answer briefly and directly from the context only."""
         raise
     except Exception as e:
         print(f"Error in answer_question: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        return {
+            "answer": f"Error: {str(e)}",
+            "links": [{'url': '#', 'text': 'Course Materials'}]
+        }
+
+# Debug endpoint to check what's in the data
+@app.get("/debug/data")
+async def debug_data():
+    """Debug endpoint to see what data is loaded"""
+    return {
+        "course_content_count": len(course_content),
+        "discourse_posts_count": len(discourse_posts),
+        "sample_course_content": course_content[:2] if course_content else [],
+        "sample_discourse_posts": discourse_posts[:2] if discourse_posts else []
+    }
+
+# Debug endpoint to test search
+@app.get("/debug/search/{question}")
+async def debug_search(question: str):
+    """Debug endpoint to test search functionality"""
+    results = simple_search(question)
+    return {
+        "question": question,
+        "results_count": len(results),
+        "results": results[:3]  # First 3 results
+    }
 
 if __name__ == "__main__":
     import uvicorn
