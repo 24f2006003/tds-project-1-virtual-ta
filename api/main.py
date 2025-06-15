@@ -101,10 +101,14 @@ def extract_text_content(item: Any) -> str:
     else:
         return str(item) if item is not None else ""
 
-def search_content(question: str, max_results: int = 10) -> List[Dict]:
-    """Search through all content with improved matching"""
+def search_content(question: str, max_results: int = 15) -> List[Dict]:
+    """Search through all content with much more flexible matching"""
     question_lower = question.lower()
     question_words = re.findall(r'\b\w+\b', question_lower)
+    
+    # Remove common stop words but keep important ones
+    stop_words = {'the', 'is', 'at', 'which', 'on', 'a', 'an', 'as', 'are', 'was', 'were', 'been', 'be'}
+    question_words = [w for w in question_words if w not in stop_words or len(w) >= 4]
     
     results = []
     
@@ -119,7 +123,7 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
             
         content_lower = content_text.lower()
         
-        # Calculate match score
+        # Calculate match score with more generous scoring
         score = 0
         
         # Exact phrase matching (higher weight)
@@ -127,24 +131,40 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
             for i in range(len(question_words) - 1):
                 phrase = f"{question_words[i]} {question_words[i+1]}"
                 if phrase in content_lower:
-                    score += 15  # Increased weight
+                    score += 20  # High weight for phrases
         
-        # Individual word matching with better scoring
+        # Individual word matching - more generous
         for word in question_words:
-            if len(word) >= 3:
-                word_count = content_lower.count(word)
+            if len(word) >= 2:  # Lowered from 3 to 2
+                # Count occurrences
+                word_count = len(re.findall(r'\b' + re.escape(word) + r'\b', content_lower))
                 if word_count > 0:
-                    score += word_count * 2  # Multiple occurrences get higher score
-                    # Bonus for exact word boundaries
-                    if re.search(r'\b' + re.escape(word) + r'\b', content_lower):
-                        score += 3
+                    score += word_count * 3  # Higher base score
+                
+                # Partial word matching for longer words
+                if len(word) >= 4:
+                    partial_matches = len(re.findall(re.escape(word), content_lower))
+                    score += partial_matches * 1
         
-        # Title matching bonus
+        # Title matching bonus - very high priority
         title = post.get('title', '').lower()
         if title:
             for word in question_words:
-                if len(word) >= 3 and word in title:
-                    score += 10  # High bonus for title matches
+                if len(word) >= 2 and word in title:
+                    score += 15  # Very high bonus for title matches
+        
+        # Keyword-based bonuses for specific topics
+        if any(word in question_lower for word in ['gpt', 'model', 'turbo', 'api', 'openai']):
+            if any(term in content_lower for term in ['gpt', 'model', 'turbo', 'api', 'openai', 'ai-proxy']):
+                score += 10
+        
+        if any(word in question_lower for word in ['docker', 'podman', 'container']):
+            if any(term in content_lower for term in ['docker', 'podman', 'container']):
+                score += 10
+        
+        if any(word in question_lower for word in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
+            if any(term in content_lower for term in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
+                score += 10
         
         # Special patterns
         if re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', content_text):  # Dates
@@ -154,7 +174,7 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
         if 'http' in content_text and 'link' in question_lower:
             score += 5
         
-        # Lower threshold for inclusion
+        # Much lower threshold for inclusion - include even weak matches
         if score > 0:
             results.append({
                 'content': content_text,
@@ -163,10 +183,10 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
                 'title': post.get('title', 'Discussion'),
                 'url': post.get('url', ''),
                 'type': 'post',
-                'raw_data': post  # Keep original data for link generation
+                'raw_data': post
             })
     
-    # Search course content
+    # Search course content with same generous approach
     for idx, content_item in enumerate(course_content):
         if not isinstance(content_item, dict):
             continue
@@ -185,24 +205,39 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
             for i in range(len(question_words) - 1):
                 phrase = f"{question_words[i]} {question_words[i+1]}"
                 if phrase in content_lower:
-                    score += 12
+                    score += 15
         
-        # Individual word matching
+        # Individual word matching - more generous
         for word in question_words:
-            if len(word) >= 3:
-                word_count = content_lower.count(word)
+            if len(word) >= 2:
+                word_count = len(re.findall(r'\b' + re.escape(word) + r'\b', content_lower))
                 if word_count > 0:
-                    score += word_count * 1.5
-                    # Bonus for exact word boundaries
-                    if re.search(r'\b' + re.escape(word) + r'\b', content_lower):
-                        score += 2
+                    score += word_count * 2
+                
+                # Partial matching for longer words
+                if len(word) >= 4:
+                    partial_matches = len(re.findall(re.escape(word), content_lower))
+                    score += partial_matches * 1
         
         # Title matching bonus
         title = content_item.get('title', '').lower()
         if title:
             for word in question_words:
-                if len(word) >= 3 and word in title:
-                    score += 8
+                if len(word) >= 2 and word in title:
+                    score += 12
+        
+        # Keyword-based bonuses
+        if any(word in question_lower for word in ['gpt', 'model', 'turbo', 'api', 'openai']):
+            if any(term in content_lower for term in ['gpt', 'model', 'turbo', 'api', 'openai', 'ai-proxy']):
+                score += 8
+        
+        if any(word in question_lower for word in ['docker', 'podman', 'container']):
+            if any(term in content_lower for term in ['docker', 'podman', 'container']):
+                score += 8
+        
+        if any(word in question_lower for word in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
+            if any(term in content_lower for term in ['dashboard', 'score', 'grade', 'ga4', 'bonus']):
+                score += 8
         
         # Special patterns
         if re.search(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', content_text):  # Dates
@@ -223,17 +258,21 @@ def search_content(question: str, max_results: int = 10) -> List[Dict]:
     results.sort(key=lambda x: x['score'], reverse=True)
     return results[:max_results]
 
-def build_context(question: str, max_chars: int = 6000) -> tuple[str, List[Dict]]:
+def build_context(question: str, max_chars: int = 8000) -> tuple[str, List[Dict]]:
     """Build context string from search results with improved link handling"""
     search_results = search_content(question)
+    
+    print(f"Question: {question}")
+    print(f"Found {len(search_results)} total results")
     
     if not search_results:
         print(f"No search results found for: {question}")
         return "", []
     
-    print(f"Found {len(search_results)} results for question: {question}")
+    # Show top results for debugging
     for i, result in enumerate(search_results[:5]):
         print(f"  Result {i+1}: Score {result['score']}, Source: {result['source']}, Title: {result.get('title', 'No title')[:50]}")
+        print(f"    Content preview: {result['content'][:100]}...")
     
     context_parts = []
     total_chars = 0
@@ -362,7 +401,7 @@ Answer briefly and directly from the context only."""
         # Call OpenAI API
         try:
             response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.0,
                 max_tokens=200  # Limit response length
