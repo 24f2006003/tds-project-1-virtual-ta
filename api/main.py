@@ -5,7 +5,7 @@ from typing import Optional, List, Dict, Any
 import os
 import json
 import re
-import base64
+import unicodedata
 from openai import OpenAI
 
 # Only load dotenv in development
@@ -70,73 +70,134 @@ def get_system_prompt():
     """System prompt for the Virtual TA"""
     return (
         "You are a Virtual Teaching Assistant for the Tools in Data Science course at IIT Madras. "
-        "Answer questions using ONLY the provided context. Be concise and direct.\n"
-        "Rules:\n"
-        "1. Give short, specific answers from the context\n"
-        "2. If information is not in context, say 'Information not available in course materials'\n"
-        "3. Don't add explanations beyond what's in the context\n"
-        "4. For dates/deadlines, only state what's explicitly mentioned\n"
-        "5. Keep responses under 100 words unless detailed explanation is needed\n"
+        "Answer questions using ONLY the provided context from course materials and discussion posts. "
+        "Be helpful, concise, and accurate.\n\n"
+        "Guidelines:\n"
+        "1. Use information directly from the provided context\n"
+        "2. If the exact information isn't available, say 'This specific information is not available in the current course materials'\n"
+        "3. Provide practical, actionable answers when possible\n"
+        "4. Reference relevant sections or topics when helpful\n"
+        "5. Keep responses focused and under 150 words unless more detail is specifically needed\n"
     )
 
-def extract_text_content(item: Any) -> str:
-    """Recursively extract all text content from nested JSON structures"""
+def normalize_text(text: str) -> str:
+    """Normalize text for better matching"""
+    if not text:
+        return ""
+    
+    # Convert to lowercase
+    text = text.lower()
+    
+    # Remove extra whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Normalize unicode characters
+    text = unicodedata.normalize('NFKD', text)
+    
+    return text
+
+def extract_searchable_text(item: Any, max_depth: int = 5) -> str:
+    """Recursively extract all searchable text content from nested JSON structures"""
+    if max_depth <= 0:
+        return ""
+    
     if isinstance(item, str):
         return item.strip()
     elif isinstance(item, dict):
         texts = []
-        for key, value in item.items():
-            if key.lower() not in ['id', 'index', 'timestamp']:  # Skip metadata fields
-                text = extract_text_content(value)
+        # Process all values, but prioritize certain keys
+        priority_keys = ['title', 'content', 'text', 'body', 'description', 'summary']
+        other_keys = [k for k in item.keys() if k.lower() not in [pk.lower() for pk in priority_keys] 
+                     and k.lower() not in ['id', 'index', 'timestamp', 'url', 'slug']]
+        
+        # Process priority keys first
+        for key in priority_keys:
+            if key in item:
+                text = extract_searchable_text(item[key], max_depth - 1)
                 if text:
                     texts.append(text)
+        
+        # Then process other keys
+        for key in other_keys:
+            text = extract_searchable_text(item[key], max_depth - 1)
+            if text:
+                texts.append(text)
+        
         return " ".join(texts)
     elif isinstance(item, list):
         texts = []
         for subitem in item:
-            text = extract_text_content(subitem)
+            text = extract_searchable_text(subitem, max_depth - 1)
             if text:
                 texts.append(text)
         return " ".join(texts)
     else:
         return str(item) if item is not None else ""
 
-def simple_search(question: str) -> List[Dict]:
-    """Simple text search that actually finds content"""
-    question_lower = question.lower()
+def calculate_relevance_score(question_words: List[str], content: str) -> float:
+    """Calculate relevance score based on word matches and their frequency"""
+    if not content or not question_words:
+        return 0.0
+    
+    content_normalized = normalize_text(content)
+    score = 0.0
+    
+    for word in question_words:
+        if len(word) < 3:  # Skip very short words
+            continue
+        
+        word_normalized = normalize_text(word)
+        
+        # Count exact matches
+        exact_matches = content_normalized.count(word_normalized)
+        score += exact_matches * 2.0
+        
+        # Check for partial matches
+        if word_normalized in content_normalized:
+            score += 1.0
+        
+        # Boost score for matches in what appears to be titles or headers
+        if any(phrase in content_normalized for phrase in [f"# {word_normalized}", f"## {word_normalized}", f"### {word_normalized}"]):
+            score += 3.0
+    
+    # Normalize by content length to avoid bias towards longer content
+    content_length_factor = min(1.0, len(content) / 1000)
+    return score * content_length_factor
+
+def enhanced_search(question: str) -> List[Dict]:
+    """Enhanced search that finds relevant content more effectively"""
+    question_normalized = normalize_text(question)
+    question_words = [w for w in question_normalized.split() if len(w) > 2]
+    
+    if not question_words:
+        return []
+    
     results = []
     
     print(f"Searching for: '{question}'")
+    print(f"Question words: {question_words}")
     print(f"Available discourse posts: {len(discourse_posts)}")
     print(f"Available course content: {len(course_content)}")
     
-    # Search discourse posts - just check if ANY word from question appears in content
+    # Search discourse posts
     for idx, post in enumerate(discourse_posts):
         try:
-            content_text = extract_text_content(post)
-            if not content_text:
+            searchable_text = extract_searchable_text(post)
+            if not searchable_text:
                 continue
             
-            content_lower = content_text.lower()
+            relevance_score = calculate_relevance_score(question_words, searchable_text)
             
-            # Very simple matching - if any significant word appears, include it
-            question_words = [w for w in question_lower.split() if len(w) > 2]
-            
-            found_match = False
-            for word in question_words:
-                if word in content_lower:
-                    found_match = True
-                    break
-            
-            if found_match:
+            if relevance_score > 0:
                 results.append({
-                    'content': content_text,
+                    'content': searchable_text[:2000],  # Limit content length
                     'source': 'discourse',
                     'title': post.get('title', 'Discussion Post'),
                     'url': post.get('url', '#'),
+                    'score': relevance_score,
                     'raw_data': post
                 })
-                print(f"Found discourse match: {post.get('title', 'No title')[:50]}")
+                print(f"Found discourse match (score: {relevance_score:.2f}): {post.get('title', 'No title')[:50]}")
         
         except Exception as e:
             print(f"Error processing discourse post {idx}: {e}")
@@ -145,50 +206,49 @@ def simple_search(question: str) -> List[Dict]:
     # Search course content
     for idx, content_item in enumerate(course_content):
         try:
-            content_text = extract_text_content(content_item)
-            if not content_text:
+            searchable_text = extract_searchable_text(content_item)
+            if not searchable_text:
                 continue
             
-            content_lower = content_text.lower()
+            relevance_score = calculate_relevance_score(question_words, searchable_text)
             
-            # Very simple matching
-            question_words = [w for w in question_lower.split() if len(w) > 2]
-            
-            found_match = False
-            for word in question_words:
-                if word in content_lower:
-                    found_match = True
-                    break
-            
-            if found_match:
+            if relevance_score > 0:
                 results.append({
-                    'content': content_text,
+                    'content': searchable_text[:2000],  # Limit content length
                     'source': 'course',
                     'title': content_item.get('title', 'Course Content'),
                     'url': content_item.get('url', '#'),
+                    'score': relevance_score,
                     'raw_data': content_item
                 })
-                print(f"Found course match: {content_item.get('title', 'No title')[:50]}")
+                print(f"Found course match (score: {relevance_score:.2f}): {content_item.get('title', 'No title')[:50]}")
         
         except Exception as e:
             print(f"Error processing course content {idx}: {e}")
             continue
     
+    # Sort by relevance score (highest first)
+    results.sort(key=lambda x: x['score'], reverse=True)
+    
     print(f"Total matches found: {len(results)}")
+    if results:
+        print(f"Top match score: {results[0]['score']:.2f}")
+    
     return results
 
 def build_context(question: str) -> tuple[str, List[Dict]]:
     """Build context from search results"""
-    search_results = simple_search(question)
+    search_results = enhanced_search(question)
     
     if not search_results:
         print("No search results found")
-        return "", []
+        # Try a fallback search with more lenient criteria
+        return try_fallback_search(question)
     
     context_parts = []
     links = []
     
-    # Take first 5 results to avoid token limits
+    # Take top 5 results to avoid token limits
     for result in search_results[:5]:
         content = result['content']
         title = result.get('title', '')
@@ -207,9 +267,40 @@ def build_context(question: str) -> tuple[str, List[Dict]]:
             'text': title or 'Related Content'
         })
     
-    context = "\n---\n".join(context_parts)
+    context = "\n" + "="*50 + "\n".join(context_parts)
     print(f"Built context with {len(context)} characters from {len(context_parts)} sources")
     
+    return context, links
+
+def try_fallback_search(question: str) -> tuple[str, List[Dict]]:
+    """Fallback search that's more lenient"""
+    print("Trying fallback search...")
+    
+    all_content = []
+    links = []
+    
+    # If no specific matches, try to return some general content
+    if course_content:
+        for i, item in enumerate(course_content[:3]):  # Take first 3 items
+            content = extract_searchable_text(item)
+            if content:
+                all_content.append(f"[COURSE] {item.get('title', 'Course Material')}\n{content[:1000]}")
+                links.append({
+                    'url': item.get('url', '#'),
+                    'text': item.get('title', 'Course Material')
+                })
+    
+    if discourse_posts:
+        for i, item in enumerate(discourse_posts[:3]):  # Take first 3 items
+            content = extract_searchable_text(item)
+            if content:
+                all_content.append(f"[DISCOURSE] {item.get('title', 'Discussion Post')}\n{content[:1000]}")
+                links.append({
+                    'url': item.get('url', '#'),
+                    'text': item.get('title', 'Discussion Post')
+                })
+    
+    context = "\n" + "="*50 + "\n".join(all_content) if all_content else ""
     return context, links
 
 class Query(BaseModel):
@@ -227,7 +318,7 @@ async def answer_question(query: Query):
         
         if not course_content and not discourse_posts:
             return {
-                "answer": "No course materials are currently available.",
+                "answer": "No course materials are currently available. Please check if the data files are properly loaded.",
                 "links": [{'url': '#', 'text': 'Course Materials'}]
             }
         
@@ -236,7 +327,7 @@ async def answer_question(query: Query):
         
         if not context.strip():
             return {
-                "answer": "Information not available in course materials",
+                "answer": "This specific information is not available in the current course materials. Please try rephrasing your question or contact the course instructor for more details.",
                 "links": [{'url': '#course-materials', 'text': 'Course Materials Reference'}]
             }
         
@@ -248,11 +339,12 @@ async def answer_question(query: Query):
             },
             {
                 "role": "user",
-                "content": f"""Context: {context}
+                "content": f"""Context from course materials:
+{context}
 
-Question: {query.question}
+Student Question: {query.question}
 
-Answer briefly and directly from the context only."""
+Please provide a helpful answer based on the context above."""
             }
         ]
         
@@ -261,8 +353,8 @@ Answer briefly and directly from the context only."""
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
-                temperature=0.0,
-                max_tokens=200
+                temperature=0.1,
+                max_tokens=300
             )
             
             if response.choices and response.choices[0].message.content:
@@ -302,22 +394,30 @@ Answer briefly and directly from the context only."""
 @app.get("/debug/data")
 async def debug_data():
     """Debug endpoint to see what data is loaded"""
+    sample_course = []
+    sample_discourse = []
+    
+    if course_content:
+        for item in course_content[:2]:
+            sample_course.append({
+                'keys': list(item.keys()) if isinstance(item, dict) else 'not_dict',
+                'title': item.get('title', 'No title') if isinstance(item, dict) else 'No title',
+                'content_preview': extract_searchable_text(item)[:200]
+            })
+    
+    if discourse_posts:
+        for item in discourse_posts[:2]:
+            sample_discourse.append({
+                'keys': list(item.keys()) if isinstance(item, dict) else 'not_dict',
+                'title': item.get('title', 'No title') if isinstance(item, dict) else 'No title',
+                'content_preview': extract_searchable_text(item)[:200]
+            })
+    
     return {
         "course_content_count": len(course_content),
         "discourse_posts_count": len(discourse_posts),
-        "sample_course_content": course_content[:2] if course_content else [],
-        "sample_discourse_posts": discourse_posts[:2] if discourse_posts else []
-    }
-
-# Debug endpoint to test search
-@app.get("/debug/search/{question}")
-async def debug_search(question: str):
-    """Debug endpoint to test search functionality"""
-    results = simple_search(question)
-    return {
-        "question": question,
-        "results_count": len(results),
-        "results": results[:3]  # First 3 results
+        "sample_course_content": sample_course,
+        "sample_discourse_posts": sample_discourse
     }
 
 if __name__ == "__main__":
