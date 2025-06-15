@@ -190,9 +190,34 @@ def find_relevant_context(question: str, max_results: int = 5) -> Tuple[str, Lis
         print(f"Error in find_relevant_context: {str(e)}")
         return "", []
 
+import base64
+import re
+
 class Query(BaseModel):
     question: str
     image: Optional[str] = None
+    
+    def process_image(self) -> Optional[str]:
+        """Process and validate image data"""
+        if not self.image:
+            return None
+            
+        # Handle base64 data
+        try:
+            # Check if it's a base64 string
+            if re.match(r'^data:image/[a-zA-Z]+;base64,', self.image):
+                # It's already in the correct format
+                return self.image
+            elif re.match(r'^[A-Za-z0-9+/]+={0,2}$', self.image):
+                # It's base64 without the prefix, add it
+                return f"data:image/png;base64,{self.image}"
+            else:
+                # Try to decode and re-encode to validate
+                base64.b64decode(self.image)
+                return f"data:image/png;base64,{self.image}"
+        except:
+            print("Warning: Invalid base64 image data received")
+            return None
 
 @app.post("/api/")
 async def answer_question(query: Query):
@@ -204,8 +229,15 @@ async def answer_question(query: Query):
         
         # Process the question and get modified context and additional docs
         processed_context, additional_docs = process_question(query.question, context)
+          # Process image data if present
+        image_data = query.process_image() if query.image else None
         
-        # Prepare messages for the API
+        # Build context string with metadata
+        context_string = processed_context
+        if image_data:
+            # For base64 images, acknowledge their presence without including the data
+            context_string = "Note: An image was provided with this question.\n\n" + context_string
+          # Prepare messages for the API
         messages = [
             {
                 "role": "system",
@@ -214,18 +246,22 @@ async def answer_question(query: Query):
             {
                 "role": "user",
                 "content": f"""Context from course materials and discussions:
-{processed_context}
+{context_string}
 
 Question: {query.question}
 
-Please provide a direct answer based solely on the context provided. If the information is not in the context, state that clearly."""
+Please provide a direct answer based on the available information. Focus on being helpful while maintaining accuracy."""
             }
         ]
         
-        if query.image:
+        # Add image as a separate message if present
+        if image_data:
             messages.append({
                 "role": "user",
-                "content": f"Reference image: {query.image}"
+                "content": [
+                    {"type": "text", "text": "Here is the image related to the question:"},
+                    {"type": "image_url", "image_url": {"url": image_data}}
+                ]
             })
         
         # Configure OpenAI request with dynamic model selection
